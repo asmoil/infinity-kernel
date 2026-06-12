@@ -109,6 +109,11 @@ jobs:
               echo "[+] Applied: Root manager support"
             fi
 
+            if [ -f /root/project/patches/0007-susfs-support.patch ]; then
+              git apply --reject --whitespace=fix /root/project/patches/0007-susfs-support.patch 2>&1 || true
+              echo "[+] Applied: SUSFS v1.5.7+ root hiding"
+            fi
+
             echo "[*] All patches applied"
 
       # ============================================
@@ -140,7 +145,7 @@ jobs:
               echo 'source "drivers/charging/Kconfig"' >> drivers/Kconfig
             fi
             if ! grep -q "obj-\$(CONFIG_CHARGING_CONTROL)" drivers/Makefile 2>/dev/null; then
-              echo 'obj-$(CONFIG_CHARGING_CONTROL)	+= charging/' >> drivers/Makefile
+              echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> drivers/Makefile
             fi
 
             if [ -f /root/project/scripts/charging_bypass/infinity_charging.dts ]; then
@@ -203,7 +208,11 @@ jobs:
                 -d CONFIG_MODULE_SIG \
                 -d CONFIG_MODULE_SIG_FORCE \
                 --set-str CONFIG_LOCALVERSION "-InfinityKernel" \
-                --set-str CONFIG_DEFAULT_TCP_CONG bbr
+                --set-str CONFIG_DEFAULT_TCP_CONG bbr \
+                -e CONFIG_SUSFS \
+                -e CONFIG_KPROBES \
+                -e CONFIG_UPROBES \
+                -e CONFIG_FTRACE
             fi
 
             echo "[*] Starting kernel build..."

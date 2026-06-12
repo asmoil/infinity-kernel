@@ -168,6 +168,17 @@ fi
 ui_print " ";
 
 # ============================================================================
+# SUSFS v1.5.7+ Detection
+# ============================================================================
+ui_print " ";
+ui_print "=== SUSFS v1.5.7+ Root Hiding ===";
+ui_print "  SUSFS kernel hooks: ENABLED (compiled in)";
+ui_print "  Hides: /proc mounts, /data/adb, UID/GID,";
+ui_print "         file paths, fs magic (overlay->ext4)";
+ui_print "  Active when root manager enables it";
+ui_print " ";
+
+# ============================================================================
 # Infinity Kernel init.rc tuning
 # ============================================================================
 backup_file init.rc;

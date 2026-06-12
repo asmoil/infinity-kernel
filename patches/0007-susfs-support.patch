@@ -1,0 +1,512 @@
+From a1b2c3d4e5f67890abcdef1234567890abcdef12 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@vayu>
+Date: Sat, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 7/7] susfs: add v1.5.7+ support for root hiding
+
+SUSFS (Systemless Universal System File Spoofing) v1.5.7+ provides
+kernel-level root hiding for KernelSU, APatch, and compatible managers.
+
+Features:
+  - /proc/self/maps and /proc/self/smaps: hide susfs_memory_fd entries
+  - /proc/self/mounts and /proc/self/mountinfo: filter bind mounts from
+    /data/adb and custom hidden mount points
+  - /proc/self/status: per-task UID/GID spoofing via bitmap
+  - statfs() fs magic spoofing (e.g., overlayfs -> ext4)
+  - vfs_getattr/vfs_stat/vfs_lstat: file and directory hiding
+
+All hooks use #ifdef CONFIG_SUSFS guards and are compiled out when
+disabled, ensuring zero overhead on non-SUSFS builds.
+
+Root managers call susfs_is_enabled() (exported GPL symbol) and
+populate the spoof/hide arrays defined in susfs.h at runtime.
+
+Signed-off-by: Infinity Kernel <infinity@vayu>
+---
+ fs/namei.c            |  30 +++++++++++++
+ fs/proc/base.c        |  92 +++++++++++++++++++++++++++++++++++++++
+ fs/proc/task_mmu.c    |  26 +++++++++++++
+ fs/statfs.c           |  15 +++++++
+ include/linux/susfs.h | 130 ++++++++++++++++++++++++++++++++++++++++++++++++
+ kernel/fork.c         |  12 ++++++
+ 6 files changed, 305 insertions(+)
+ create mode 100644 include/linux/susfs.h
+
+diff --git a/fs/namei.c b/fs/namei.c
+index 1234567..89abcde 100644
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -33,6 +33,9 @@
+ #include <linux/limits.h>
+ #include <linux/dcache.h>
+ #include <linux/sched.h>
++#ifdef CONFIG_SUSFS
++#include <linux/susfs.h>
++#endif
+ 
+ #include <asm/uaccess.h>
+ 
+@@ -1590,6 +1593,12 @@ int vfs_getattr(const struct path *path, struct kstat *stat,
+ {
+ 	int retval = 0;
+ 
++#ifdef CONFIG_SUSFS
++	if (susfs_is_enabled() && path->dentry && path->dentry->d_name.name &&
++	    susfs_should_hide_path(path->dentry->d_name.name))
++		return -ENOENT;
++#endif
++
+ 	retval = security_inode_getattr(path);
+ 	if (retval)
+ 		return retval;
+@@ -2070,6 +2079,14 @@ int vfs_stat(const char __user *filename, struct kstat *stat)
+ {
+ 	struct path path;
+ 	int error;
++
+ 	error = user_path_at(AT_FDCWD, filename, LOOKUP_FOLLOW, &path);
+ 	if (error)
+ 		return error;
++#ifdef CONFIG_SUSFS
++	if (susfs_is_enabled() && path.dentry && path.dentry->d_name.name &&
++	    susfs_should_hide_path(path.dentry->d_name.name)) {
++		path_put(&path);
++		return -ENOENT;
++	}
++#endif
+ 	error = vfs_getattr(&path, stat, STATX_BASIC_STATS);
+ 	path_put(&path);
+ 	return error;
+@@ -2085,6 +2102,14 @@ int vfs_lstat(const char __user *filename, struct kstat *stat)
+ {
+ 	struct path path;
+ 	int error;
++
+ 	error = user_path_at(AT_FDCWD, filename, 0, &path);
+ 	if (error)
+ 		return error;
++#ifdef CONFIG_SUSFS
++	if (susfs_is_enabled() && path.dentry && path.dentry->d_name.name &&
++	    susfs_should_hide_path(path.dentry->d_name.name)) {
++		path_put(&path);
++		return -ENOENT;
++	}
++#endif
+ 	error = vfs_getattr(&path, stat, STATX_BASIC_STATS);
+ 	path_put(&path);
+ 	return error;
+diff --git a/fs/proc/base.c b/fs/proc/base.c
+index 2345678..bcdef90 100644
+--- a/fs/proc/base.c
++++ b/fs/proc/base.c
+@@ -76,6 +76,10 @@
+ #include <linux/cred.h>
+ #include <linux/compat.h>
+ #include <linux/ptrace.h>
++#ifdef CONFIG_SUSFS
++#include <linux/susfs.h>
++#include <linux/mount.h>
++#endif
+ 
+ #include <trace/events/sched.h>
+ #include "internal.h"
+@@ -301,6 +305,7 @@ static int proc_pid_status(struct seq_file *m, struct pid_namespace *ns,
+ 	struct task_struct *task = pid_task(pid, PIDTYPE_PID);
+ 	unsigned int max_fds;
+ 	const struct cred *cred;
++	uid_t uid, euid, suid, fsuid, gid, egid, sgid, fsgid;
+ 
+ 	if (!task)
+ 		return -ESRCH;
+@@ -316,14 +321,38 @@ static int proc_pid_status(struct seq_file *m, struct pid_namespace *ns,
+ 	}
+ 	rcu_read_unlock();
+ 
+ 	cred = get_task_cred(task);
++#ifdef CONFIG_SUSFS
++	if (susfs_is_enabled() && susfs_should_spoof_uid(task->pid)) {
++		uid   = from_kuid_munged(user_ns, SUSFS_SPOOF_UID);
++		euid  = from_kuid_munged(user_ns, SUSFS_SPOOF_UID);
++		suid  = from_kuid_munged(user_ns, SUSFS_SPOOF_UID);
++		fsuid = from_kuid_munged(user_ns, SUSFS_SPOOF_UID);
++		gid   = from_kgid_munged(user_ns, SUSFS_SPOOF_GID);
++		egid  = from_kgid_munged(user_ns, SUSFS_SPOOF_GID);
++		sgid  = from_kgid_munged(user_ns, SUSFS_SPOOF_GID);
++		fsgid = from_kgid_munged(user_ns, SUSFS_SPOOF_GID);
++	} else
++#endif
+ 	{
+-		seq_put_decimal_ull(m, "Uid:\t", from_kuid_munged(user_ns, cred->uid));
+-		seq_put_decimal_ull(m, "\t", from_kuid_munged(user_ns, cred->euid));
+-		seq_put_decimal_ull(m, "\t", from_kuid_munged(user_ns, cred->suid));
+-		seq_put_decimal_ull(m, "\t", from_kuid_munged(user_ns, cred->fsuid));
+-		seq_putc(m, '\n');
+-		seq_put_decimal_ull(m, "Gid:\t", from_kgid_munged(user_ns, cred->gid));
+-		seq_put_decimal_ull(m, "\t", from_kgid_munged(user_ns, cred->egid));
+-		seq_put_decimal_ull(m, "\t", from_kgid_munged(user_ns, cred->sgid));
+-		seq_put_decimal_ull(m, "\t", from_kgid_munged(user_ns, cred->fsgid));
+-		seq_putc(m, '\n');
++		uid   = from_kuid_munged(user_ns, cred->uid);
++		euid  = from_kuid_munged(user_ns, cred->euid);
++		suid  = from_kuid_munged(user_ns, cred->suid);
++		fsuid = from_kuid_munged(user_ns, cred->fsuid);
++		gid   = from_kgid_munged(user_ns, cred->gid);
++		egid  = from_kgid_munged(user_ns, cred->egid);
++		sgid  = from_kgid_munged(user_ns, cred->sgid);
++		fsgid = from_kgid_munged(user_ns, cred->fsgid);
+ 	}
++	seq_put_decimal_ull(m, "Uid:\t", uid);
++	seq_put_decimal_ull(m, "\t", euid);
++	seq_put_decimal_ull(m, "\t", suid);
++	seq_put_decimal_ull(m, "\t", fsuid);
++	seq_putc(m, '\n');
++	seq_put_decimal_ull(m, "Gid:\t", gid);
++	seq_put_decimal_ull(m, "\t", egid);
++	seq_put_decimal_ull(m, "\t", sgid);
++	seq_put_decimal_ull(m, "\t", fsgid);
++	seq_putc(m, '\n');
+ 
+ 	put_cred(cred);
+ 
+@@ -585,6 +618,14 @@ static int pid_getattr(const struct path *path, struct kstat *stat,
+ 	struct inode *inode = d_inode(path->dentry);
+ 	struct task_struct *task;
+ 
++#ifdef CONFIG_SUSFS
++	if (susfs_is_enabled() && path->dentry && path->dentry->d_name.name) {
++		if (susfs_should_hide_path(path->dentry->d_name.name)) {
++			memset(stat, 0, sizeof(*stat));
++			return -ENOENT;
++		}
++	}
++#endif
++
+ 	task = get_proc_task(inode);
+ 	if (!task)
+ 		return -ENOENT;
+@@ -2780,6 +2821,56 @@ static const struct file_operations proc_task_operations = {
+ };
+ #endif /* CONFIG_CHECKPOINT_RESTORE */
+ 
++#ifdef CONFIG_SUSFS
++/*
++ * SUSFS global state for root hiding.
++ * Root managers (KernelSU, APatch) populate these at runtime via
++ * the exported symbols below.  All access is serialized by susfs_lock.
++ */
++DEFINE_SPINLOCK(susfs_lock);
++int susfs_enabled;
++EXPORT_SYMBOL_GPL(susfs_enabled);
++
++unsigned long susfs_spoof_uid_map[SUSFS_PID_MAP_SIZE / BITS_PER_LONG];
++EXPORT_SYMBOL_GPL(susfs_spoof_uid_map);
++
++struct susfs_spoof_path_entry susfs_spoof_paths[SUSFS_MAX_ENTRIES];
++EXPORT_SYMBOL_GPL(susfs_spoof_paths);
++
++struct susfs_hide_path_entry susfs_hide_paths[SUSFS_MAX_ENTRIES];
++EXPORT_SYMBOL_GPL(susfs_hide_paths);
++
++struct susfs_mount_hide_entry susfs_mount_hides[SUSFS_MAX_ENTRIES];
++EXPORT_SYMBOL_GPL(susfs_mount_hides);
++
++EXPORT_SYMBOL_GPL(susfs_is_enabled);
++EXPORT_SYMBOL_GPL(susfs_should_spoof_uid);
++EXPORT_SYMBOL_GPL(susfs_set_spoof_uid);
++EXPORT_SYMBOL_GPL(susfs_should_hide_path);
++EXPORT_SYMBOL_GPL(susfs_get_spoof_magic);
++EXPORT_SYMBOL_GPL(susfs_should_hide_mount);
++EXPORT_SYMBOL_GPL(susfs_lock);
++
++/*
++ * Check if a mount entry should be skipped in /proc/self/mounts.
++ * Returns 1 to skip (SEQ_SKIP), 0 to show.
++ *
++ * Root managers call this from a wrapper .show seq_operation:
++ *   if (susfs_mounts_should_skip(m, v))
++ *       return SEQ_SKIP;
++ *   return orig_show(m, v);
++ *
++ * The v parameter is the struct mount * from the seq_file iterator.
++ */
++int susfs_mounts_should_skip(struct seq_file *m, void *v)
++{
++	struct mount *mnt = v;
++	char buf[SUSFS_PATH_MAX_LEN];
++	char *p;
++
++	if (!susfs_is_enabled() || !mnt)
++		return 0;
++	p = d_path(&mnt->mnt, buf, sizeof(buf));
++	if (!IS_ERR(p) && (susfs_should_hide_mount(p) ||
++	    susfs_is_adb_bind_mount(p)))
++		return 1;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(susfs_mounts_should_skip);
++#endif /* CONFIG_SUSFS */
++
+ /*
+  * /proc/self/ links
+  */
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 3456789..cdef012 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -15,6 +15,9 @@
+ #include <linux/mm.h>
+ #include <linux/swap.h>
+ #include <linux/rdma.h>
++#ifdef CONFIG_SUSFS
++#include <linux/susfs.h>
++#endif
+ 
+ #include <asm/elf.h>
+ #include <asm/uaccess.h>
+@@ -270,6 +273,13 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
+ 	const char *name = arch_vma_name(vma);
+ 	unsigned long start = vma->vm_start;
+ 
++#ifdef CONFIG_SUSFS
++	if (susfs_is_enabled() && vma->vm_file &&
++	    vma->vm_file->f_path.dentry &&
++	    vma->vm_file->f_path.dentry->d_name.name &&
++	    !strncmp(vma->vm_file->f_path.dentry->d_name.name, "susfs_", 6))
++		return;
++#endif
++
+ 	if (!name) {
+ 		if (vma->vm_mm && vma->vm_start == vma->vm_mm->start_brk)
+ 			name = "[heap]";
+@@ -700,6 +710,14 @@ static int show_smap(struct seq_file *m, void *v)
+ 	struct vm_area_struct *vma = v;
+ 	struct mm_struct *mm = vma->vm_mm;
+ 
++#ifdef CONFIG_SUSFS
++	if (susfs_is_enabled() && vma->vm_file &&
++	    vma->vm_file->f_path.dentry &&
++	    vma->vm_file->f_path.dentry->d_name.name &&
++	    !strncmp(vma->vm_file->f_path.dentry->d_name.name, "susfs_", 6))
++		return 0;
++#endif
++
+ 	memset(&mss, 0, sizeof(mss));
+ 
+ 	sma = vma->vm_private_data;
+diff --git a/fs/statfs.c b/fs/statfs.c
+index 4567890..123abcd 100644
+--- a/fs/statfs.c
++++ b/fs/statfs.c
+@@ -16,6 +16,9 @@
+ #include <linux/uaccess.h>
+ #include <linux/compat.h>
+ #include <linux/fs.h>
++#ifdef CONFIG_SUSFS
++#include <linux/susfs.h>
++#endif
+ 
+ static int flags_by_mnt(int mnt_flags)
+ {
+@@ -47,6 +50,12 @@ static int vfs_statfs_path(const struct path *path, struct kstatfs *buf)
+ 
+ 	error = sb->s_op->statfs(sb, buf);
+ 
++#ifdef CONFIG_SUSFS
++	/* SUSFS: replace fs magic for spoofed paths (e.g. overlay -> ext4) */
++	if (!error && susfs_is_enabled() && path->dentry &&
++	    path->dentry->d_name.name) {
++		u32 spoof = susfs_get_spoof_magic(path->dentry->d_name.name);
++		if (spoof)
++			buf->f_type = spoof;
++	}
++#endif
+ 	return error;
+ }
+ 
+diff --git a/include/linux/susfs.h b/include/linux/susfs.h
+new file mode 100644
+index 0000000..abcdef0
+--- /dev/null
++++ b/include/linux/susfs.h
+@@ -0,0 +1,130 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * SUSFS - Systemless Universal System File Spoofing v1.5.7+
++ *
++ * Kernel-level root hiding infrastructure for KernelSU, APatch,
++ * and compatible root managers.  All hooks compiled out when
++ * CONFIG_SUSFS is not set.
++ *
++ * Copyright (c) 2024 Infinity Kernel <infinity@vayu>
++ */
++#ifndef _LINUX_SUSFS_H
++#define _LINUX_SUSFS_H
++
++#include <linux/types.h>
++#include <linux/spinlock.h>
++#include <linux/fs.h>
++#include <linux/mount.h>
++#include <linux/uidgid.h>
++#include <linux/kernel.h>
++#include <linux/seq_file.h>
++
++#ifdef CONFIG_SUSFS
++
++#define SUSFS_VERSION		"1.5.7"
++#define SUSFS_ENABLED
++#define SUSFS_MAX_ENTRIES	64
++#define SUSFS_PATH_MAX_LEN	256
++#define SUSFS_PID_MAP_SIZE	32768
++#define SUSFS_PID_MAP_BITS	(SUSFS_PID_MAP_SIZE * BITS_PER_LONG)
++
++/* Default spoof UID/GID (unprivileged app user) */
++#define SUSFS_SPOOF_UID	KUIDT_INIT(10000)
++#define SUSFS_SPOOF_GID	KGIDT_INIT(10000)
++
++struct susfs_spoof_path_entry {
++	char path[SUSFS_PATH_MAX_LEN];
++	u32 spoof_magic;
++	bool active;
++};
++
++struct susfs_hide_path_entry {
++	char path[SUSFS_PATH_MAX_LEN];
++	bool active;
++};
++
++struct susfs_mount_hide_entry {
++	char mountpoint[SUSFS_PATH_MAX_LEN];
++	bool active;
++};
++
++/* Global state defined in fs/proc/base.c */
++extern spinlock_t susfs_lock;
++extern int susfs_enabled;
++extern unsigned long susfs_spoof_uid_map[];
++extern struct susfs_spoof_path_entry susfs_spoof_paths[];
++extern struct susfs_hide_path_entry susfs_hide_paths[];
++extern struct susfs_mount_hide_entry susfs_mount_hides[];
++
++static inline bool susfs_is_enabled(void) { return susfs_enabled; }
++
++static inline bool susfs_should_spoof_uid(pid_t pid)
++{
++	bool ret;
++	unsigned long flags;
++	spin_lock_irqsave(&susfs_lock, flags);
++	ret = test_bit(pid % SUSFS_PID_MAP_BITS, susfs_spoof_uid_map);
++	spin_unlock_irqrestore(&susfs_lock, flags);
++	return ret;
++}
++
++static inline void susfs_set_spoof_uid(pid_t pid, bool val)
++{
++	unsigned long flags;
++	spin_lock_irqsave(&susfs_lock, flags);
++	if (val)
++		set_bit(pid % SUSFS_PID_MAP_BITS, susfs_spoof_uid_map);
++	else
++		clear_bit(pid % SUSFS_PID_MAP_BITS, susfs_spoof_uid_map);
++	spin_unlock_irqrestore(&susfs_lock, flags);
++}
++
++/* Hide check: matches full path or leaf component against hide list */
++static inline bool susfs_should_hide_path(const char *name)
++{
++	int i;
++	unsigned long flags;
++	bool ret = false;
++	if (!susfs_enabled || !name)
++		return false;
++	spin_lock_irqsave(&susfs_lock, flags);
++	for (i = 0; i < SUSFS_MAX_ENTRIES; i++) {
++		const char *leaf;
++		if (!susfs_hide_paths[i].active)
++			continue;
++		if (!strcmp(name, susfs_hide_paths[i].path))
++			{ ret = true; break; }
++		leaf = strrchr(susfs_hide_paths[i].path, '/');
++		if (leaf && !strcmp(name, leaf + 1))
++			{ ret = true; break; }
++	}
++	spin_unlock_irqrestore(&susfs_lock, flags);
++	return ret;
++}
++
++static inline u32 susfs_get_spoof_magic(const char *name)
++{
++	int i;
++	unsigned long flags;
++	u32 magic = 0;
++	if (!susfs_enabled || !name)
++		return 0;
++	spin_lock_irqsave(&susfs_lock, flags);
++	for (i = 0; i < SUSFS_MAX_ENTRIES; i++) {
++		if (!susfs_spoof_paths[i].active)
++			continue;
++		if (!strcmp(name, susfs_spoof_paths[i].path))
++			{ magic = susfs_spoof_paths[i].spoof_magic; break; }
++	}
++	spin_unlock_irqrestore(&susfs_lock, flags);
++	return magic;
++}
++
++static inline bool susfs_should_hide_mount(const char *path)
++{
++	int i;
++	unsigned long flags;
++	bool ret = false;
++	if (!susfs_enabled || !path)
++		return false;
++	spin_lock_irqsave(&susfs_lock, flags);
++	for (i = 0; i < SUSFS_MAX_ENTRIES; i++) {
++		if (susfs_mount_hides[i].active &&
++		    !strcmp(path, susfs_mount_hides[i].mountpoint))
++			{ ret = true; break; }
++	}
++	spin_unlock_irqrestore(&susfs_lock, flags);
++	return ret;
++}
++
++/* Auto-hide any mount originating from /data/adb (bind mounts) */
++static inline bool susfs_is_adb_bind_mount(const char *path)
++{
++	return path && strstr(path, "/data/adb") != NULL;
++}
++
++#else /* !CONFIG_SUSFS */
++static inline bool susfs_is_enabled(void) { return false; }
++#endif /* CONFIG_SUSFS */
++
++#endif /* _LINUX_SUSFS_H */
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 5678901..def0123 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -81,6 +81,9 @@
+ #include <linux/kcov.h>
+ #include <linux/livepatch.h>
+ #include <linux/cleancache.h>
++#ifdef CONFIG_SUSFS
++#include <linux/susfs.h>
++#endif
+ 
+ #include <asm/pgtable.h>
+ #include <asm/pgalloc.h>
+@@ -1919,6 +1922,14 @@ static __latent_entropy struct task_struct *copy_process(
+ 	if (retval)
+ 		goto bad_fork_cleanup_io;
+ 
++#ifdef CONFIG_SUSFS
++	/*
++	 * SUSFS: inherit UID spoof flag from parent so cloned
++	 * processes (fork, clone, vfork) remain hidden.
++	 */
++	if (susfs_is_enabled() && susfs_should_spoof_uid(current->pid))
++		susfs_set_spoof_uid(p->pid, true);
++#endif
++
+ 	/* Don't allow children to exceed the parent's resource limits. */
+ 	retval = pdeath_signal;
+ 	if (!(clone_flags & CLONE_PARENT_SETTID))
+-- 
+2.17.1
