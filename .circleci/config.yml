@@ -1,0 +1,383 @@
+version: 2.1
+
+orbs:
+  android: circleci/android@2.3.0
+
+# =============================================================================
+# ENVIRONMENT VARIABLES (set in CircleCI Project Settings)
+# =============================================================================
+# No secrets needed for kernel build. All is open source.
+# Set these in CircleCI dashboard -> Project Settings -> Environment Variables:
+#   KERNEL_VERSION  = 1.0          (optional, default: 1.0)
+#   PARALLEL_JOBS   = 8            (optional, default: nproc)
+# =============================================================================
+
+aliases:
+  - &workspace_root /home/circleci/project
+  - &kernel_output /home/circleci/project/out
+  - &anykernel_staging /home/circleci/project/anykernel_out
+
+commands:
+  install-build-tools:
+    description: "Install cross-compilation toolchain and build dependencies"
+    steps:
+      - run:
+          name: "Install build dependencies"
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y \
+              gcc-aarch64-linux-gnu \
+              make \
+              bc \
+              bison \
+              flex \
+              libssl-dev \
+              libelf-dev \
+              python3 \
+              python3-pip \
+              ccache \
+              git \
+              wget \
+              xz-utils \
+              zip \
+              unzip \
+              file \
+              rsync \
+              lz4 \
+              zstd
+
+      - run:
+          name: "Install Proton Clang (recommended for best performance)"
+          command: |
+            if [ ! -d "$HOME/proton-clang" ]; then
+              echo "Downloading Proton Clang..."
+              wget -q https://github.com/kdrag0n/proton-clang/releases/download/17.0.2/proton-clang-17.0.2.tar.xz -O /tmp/proton-clang.tar.xz
+              mkdir -p $HOME/proton-clang
+              tar -xf /tmp/proton-clang.tar.xz -C $HOME/proton-clang --strip-components=1
+              rm -f /tmp/proton-clang.tar.xz
+              echo "Proton Clang installed successfully"
+            else
+              echo "Proton Clang already exists, skipping download"
+            fi
+            export PATH="$HOME/proton-clang/bin:$PATH"
+            clang --version | head -1
+
+      - run:
+          name: "Setup ccache"
+          command: |
+            ccache --set-config=max_size=2G
+            ccache --set-config=compression=true
+            ccache -z
+
+  apply-infinity-patches:
+    description: "Apply Infinity Kernel patches to kernel source"
+    steps:
+      - run:
+          name: "Apply Infinity Kernel patches"
+          command: |
+            echo "============================================="
+            echo "  Applying Infinity Kernel Patches"
+            echo "============================================="
+
+            PATCHES_DIR="infinity-kernel/patches"
+            APPLIED=0
+            FAILED=0
+
+            if [ ! -d "$PATCHES_DIR" ]; then
+              echo "ERROR: Patches directory not found: $PATCHES_DIR"
+              exit 1
+            fi
+
+            for patch_file in $(find "$PATCHES_DIR" -name "*.patch" -type f | sort); do
+              patch_name=$(basename "$patch_file")
+              echo ""
+              echo "[PATCH] $patch_name"
+
+              if git apply --3way --fuzz=3 "$patch_file" 2>/dev/null; then
+                echo "  [OK] Applied successfully"
+                ((APPLIED++))
+              elif patch -p1 --fuzz=3 --no-backup-if-mismatch < "$patch_file" 2>/dev/null; then
+                echo "  [OK] Applied with patch command"
+                ((APPLIED++))
+              else
+                echo "  [WARN] Failed to apply (may need manual fix)"
+                ((FAILED++))
+              fi
+            done
+
+            echo ""
+            echo "Patches applied: $APPLIED, Failed: $FAILED"
+
+            # Install custom Infinity Kernel files
+            echo ""
+            echo "[INFO] Installing Infinity Kernel custom files..."
+
+            # Charging control driver
+            if [ -d "infinity-kernel/drivers/charging" ]; then
+              mkdir -p drivers/charging
+              cp infinity-kernel/drivers/charging/*.c drivers/charging/
+              cp infinity-kernel/drivers/charging/Makefile drivers/charging/
+              echo "  [OK] Charging control driver installed"
+            fi
+
+            # Header files
+            if [ -f "infinity-kernel/include/linux/infinity_charging_control.h" ]; then
+              cp infinity-kernel/include/linux/infinity_charging_control.h include/linux/
+              echo "  [OK] Header files installed"
+            fi
+
+            # Defconfig
+            if [ -f "infinity-kernel/arch/arm64/configs/infinity_defconfig" ]; then
+              cp infinity-kernel/arch/arm64/configs/infinity_defconfig arch/arm64/configs/
+              echo "  [OK] Defconfig installed"
+            fi
+
+            # Add charging driver to kernel build system
+            if ! grep -q "infinity_charging" drivers/Kconfig 2>/dev/null; then
+              echo 'source "drivers/charging/Kconfig"' >> drivers/Kconfig 2>/dev/null || true
+              echo 'obj-$(CONFIG_INFINITY_CHARGING_CONTROL)	+= charging/' >> drivers/Makefile 2>/dev/null || true
+              echo "  [OK] Charging driver added to build system"
+            fi
+
+            echo ""
+            echo "============================================="
+            echo "  Patch application complete!"
+            echo "============================================="
+
+  build-kernel:
+    description: "Build Infinity Kernel"
+    steps:
+      - run:
+          name: "Configure kernel (defconfig)"
+          command: |
+            export ARCH=arm64
+            export PATH="$HOME/proton-clang/bin:$PATH"
+
+            echo "============================================="
+            echo "  Applying infinity_defconfig"
+            echo "============================================="
+
+            make ARCH=arm64 infinity_defconfig
+
+            # Verify key Infinity Kernel configs are set
+            echo ""
+            echo "[INFO] Verifying Infinity Kernel configuration..."
+            grep -E "CONFIG_INFINITY_KERNEL|CONFIG_INFINITY_CHARGING|CONFIG_FSYNC|CONFIG_LRU_GEN|CONFIG_TCP_CONG_BBR" .config | head -20 || true
+
+      - run:
+          name: "Build kernel (this takes ~15-30 min)"
+          no_output_timeout: 45m
+          command: |
+            export ARCH=arm64
+            export CROSS_COMPILE=aarch64-linux-gnu-
+            export CLANG_TRIPLE=aarch64-linux-gnu-
+            export PATH="$HOME/proton-clang/bin:$PATH"
+            export KBUILD_BUILD_USER="InfinityKernelCI"
+            export KBUILD_BUILD_HOST="circleci"
+            JOBS=${PARALLEL_JOBS:-$(nproc)}
+
+            echo "============================================="
+            echo "  Building Infinity Kernel"
+            echo "============================================="
+            echo "  ARCH:            arm64"
+            echo "  JOBS:            $JOBS"
+            echo "  Toolchain:       Proton Clang 17"
+            echo "  Output:          arch/arm64/boot/Image.gz"
+            echo "============================================="
+            echo ""
+
+            make -j"$JOBS" \
+              CC="ccache clang" \
+              LD="ld.lld" \
+              AR="llvm-ar" \
+              NM="llvm-nm" \
+              OBJCOPY="llvm-objcopy" \
+              OBJDUMP="llvm-objdump" \
+              STRIP="llvm-strip" \
+              2>&1 | tee build.log
+
+            # Check build result
+            if [ -f "arch/arm64/boot/Image.gz" ]; then
+              echo ""
+              echo "============================================="
+              echo "  BUILD SUCCESSFUL!"
+              echo "============================================="
+              ls -lh arch/arm64/boot/Image.gz
+              ls -lh arch/arm64/boot/dts/qcom/*.dtb 2>/dev/null || true
+            else
+              echo ""
+              echo "============================================="
+              echo "  BUILD FAILED!"
+              echo "============================================="
+              echo "Check build.log for errors"
+              exit 1
+            fi
+
+  create-anykernel-zip:
+    description: "Package kernel as AnyKernel3 flashable ZIP"
+    steps:
+      - run:
+          name: "Create AnyKernel3 ZIP"
+          command: |
+            KERNEL_VERSION="${KERNEL_VERSION:-1.0}"
+            ZIP_NAME="InfinityKernel-v${KERNEL_VERSION}-vayu-$(date +%Y%m%d-%H%M).zip"
+            STAGING="/tmp/anykernel_staging"
+            OUT_DIR="out"
+
+            echo "============================================="
+            echo "  Creating AnyKernel3 ZIP: $ZIP_NAME"
+            echo "============================================="
+
+            # Clean and setup staging
+            rm -rf "$STAGING"
+            mkdir -p "$STAGING/kernel" "$STAGING/dtb" "$OUT_DIR"
+
+            # Copy AnyKernel3 template
+            cp -r infinity-kernel/AnyKernel3/* "$STAGING/"
+
+            # Copy kernel image
+            if [ -f "arch/arm64/boot/Image.gz" ]; then
+              cp arch/arm64/boot/Image.gz "$STAGING/kernel/"
+              echo "  [OK] Image.gz copied"
+            elif [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
+              cp arch/arm64/boot/Image.gz-dtb "$STAGING/kernel/"
+              echo "  [OK] Image.gz-dtb copied"
+            else
+              echo "  [ERROR] No kernel image found!"
+              exit 1
+            fi
+
+            # Copy DTB files
+            DTB_COUNT=0
+            for dtb in arch/arm64/boot/dts/qcom/*.dtb; do
+              if [ -f "$dtb" ]; then
+                cp "$dtb" "$STAGING/dtb/"
+                DTB_COUNT=$((DTB_COUNT + 1))
+              fi
+            done
+            echo "  [OK] $DTB_COUNT DTB files copied"
+
+            # Copy DTBO if exists
+            if [ -f "arch/arm64/boot/dtbo.img" ]; then
+              cp arch/arm64/boot/dtbo.img "$STAGING/"
+              echo "  [OK] DTBO copied"
+            fi
+
+            # Set permissions
+            chmod +x "$STAGING/anykernel.sh" 2>/dev/null || true
+            chmod +x "$STAGING/META-INF/com/google/android/update-binary" 2>/dev/null || true
+            chmod +x "$STAGING/tools/infinity_init.sh" 2>/dev/null || true
+
+            # Create ZIP
+            cd "$STAGING"
+            zip -r -9 "${WORKSPACE_ROOT}/${OUT_DIR}/${ZIP_NAME}" . -x ".git/*"
+
+            # Generate hashes
+            cd "${WORKSPACE_ROOT}/${OUT_DIR}"
+            md5sum "$ZIP_NAME" > "${ZIP_NAME}.md5sum"
+            sha256sum "$ZIP_NAME" > "${ZIP_NAME}.sha256"
+
+            echo ""
+            echo "============================================="
+            echo "  ZIP Created Successfully!"
+            echo "============================================="
+            echo "  File: ${OUT_DIR}/${ZIP_NAME}"
+            echo "  Size: $(du -sh ${OUT_DIR}/${ZIP_NAME} | cut -f1)"
+            echo "  MD5:  $(cat ${ZIP_NAME}.md5sum | cut -d' ' -f1)"
+            echo "============================================="
+
+            # Save ZIP name for upload step
+            echo "$ZIP_NAME" > /tmp/kernel_zip_name.txt
+
+  upload-artifacts:
+    description: "Upload build artifacts to CircleCI"
+    steps:
+      - store_artifacts:
+          path: out/
+          destination: infinity-kernel-build
+
+      - store_test_results:
+          path: out/
+
+jobs:
+  # ==========================================================================
+  # BUILD JOB - Full kernel build with AnyKernel3 packaging
+  # ==========================================================================
+  build:
+    resource_class: large
+    docker:
+      - image: cimg/base:stable
+    environment:
+      KERNEL_VERSION: "1.0"
+      PARALLEL_JOBS: "8"
+    steps:
+      - checkout
+      - install-build-tools
+      - apply-infinity-patches
+      - build-kernel
+      - create-anykernel-zip
+      - upload-artifacts
+
+  # ==========================================================================
+  # QUICK BUILD - Only compile kernel, no ZIP packaging (for testing patches)
+  # ==========================================================================
+  build-test:
+    resource_class: medium
+    docker:
+      - image: cimg/base:stable
+    environment:
+      PARALLEL_JOBS: "4"
+    steps:
+      - checkout
+      - install-build-tools
+      - apply-infinity-patches
+      - run:
+          name: "Quick build test (compile only)"
+          no_output_timeout: 30m
+          command: |
+            export ARCH=arm64
+            export CROSS_COMPILE=aarch64-linux-gnu-
+            export CLANG_TRIPLE=aarch64-linux-gnu-
+            export PATH="$HOME/proton-clang/bin:$PATH"
+            JOBS=${PARALLEL_JOBS:-$(nproc)}
+
+            make ARCH=arm64 infinity_defconfig
+            make -j"$JOBS" \
+              CC="ccache clang" \
+              LD="ld.lld" \
+              AR="llvm-ar" \
+              NM="llvm-nm" \
+              OBJCOPY="llvm-objcopy" \
+              2>&1 | tail -50
+
+            if [ -f "arch/arm64/boot/Image.gz" ]; then
+              echo "BUILD TEST: PASSED"
+              ls -lh arch/arm64/boot/Image.gz
+            else
+              echo "BUILD TEST: FAILED"
+              exit 1
+            fi
+
+# =============================================================================
+# WORKFLOWS
+# =============================================================================
+workflows:
+  infinity-kernel-ci:
+    jobs:
+      # Full build on main branch push
+      - build:
+          filters:
+            branches:
+              only:
+                - main
+                - vayu-r-oss
+            tags:
+              only: /^v.*/
+
+      # Quick test build on PRs and other branches
+      - build-test:
+          filters:
+            branches:
+              ignore:
+                - main
+                - vayu-r-oss

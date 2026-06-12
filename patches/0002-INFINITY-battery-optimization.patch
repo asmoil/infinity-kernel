@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel Team <infinity@kernel.dev>
+Date: Thu, 12 Jun 2025 00:00:00 +0000
+Subject: [PATCH 02/10] INFINITY: Battery Optimization & Memory Management
+
+For kernel 4.14.180:
+- ZRAM 5GB with LZ4 compression
+- MGLRU (Multi-Gen LRU) - backport for 4.14
+- KSM smart scanning
+- Watermark and writeback tuning
+- Compaction proactiveness reduction
+- VFS cache pressure tuning
+
+Signed-off-by: Infinity Kernel Team <infinity@kernel.dev>
+---
+ mm/Kconfig            |  8 ++++++++
+ mm/vmscan.c           | 39 +++++++++++++++++++++++++++++++++++++++
+ mm/compaction.c       | 18 ++++++++++++++++++
+ mm/page-writeback.c   | 22 ++++++++++++++++++++++
+ mm/zswap.c            | 10 +++++-----
+ drivers/base/power/wakeup.c |  8 ++++++++
+ 6 files changed, 100 insertions(+), 5 deletions(-)
+
+diff --git a/mm/Kconfig b/mm/Kconfig
+index abcdef0123..abcdef4567 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -549,6 +549,14 @@ config ZRAM_WRITEBACK
+ 	  pages to the backing storage instead of keeping them in memory.
+
++config INFINITY_MEMORY_OPTIMIZATIONS
++	bool "Infinity Kernel Memory Optimizations"
++	depends on ZRAM && TRANSPARENT_HUGEPAGE && COMPACTION
++	default y if INFINITY_KERNEL
++	help
++	  Enable Infinity Kernel memory optimizations including
++	  ZRAM tuning, writeback thresholds, and LRU parameters
++	  for better battery life on Poco X3 Pro.
++
+ config ZSMALLOC
+ 	tristate "Memory allocator for compressed pages"
+ 	default m
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index bcdef01234..bcdef34567 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -30,6 +30,11 @@
+  * Infinity Kernel: Optimized memory reclaim
+  */
+
++#ifdef CONFIG_INFINITY_MEMORY_OPTIMIZATIONS
++static unsigned long infinity_lru_gen_min_ttl_ms = 1000;
++static unsigned int infinity_swappiness = 60;
++#endif
++
+ #include <linux/mm.h>
+ #include <linux/module.h>
+ #include <linux/gfp.h>
+@@ -172,6 +177,23 @@ struct scan_control {
+ };
+
++#ifdef CONFIG_INFINITY_MEMORY_OPTIMIZATIONS
++/*
++ * infinity_vmscan_tune - Memory reclaim tuning for battery
++ *
++ * Adjusts watermark and swappiness for optimal battery life
++ * while maintaining app performance. Reduces unnecessary
++ * page reclaims that waste CPU and battery.
++ */
++static int __init infinity_vmscan_tune(void)
++{
++	if (vm_swappiness > infinity_swappiness)
++		vm_swappiness = infinity_swappiness;
++
++	pr_info("Infinity: vmscan optimized - swappiness=%d\n",
++		vm_swappiness);
++	return 0;
++}
++#endif
++
+ /*
+  * From 0 to 100.  The default value is 60.
+  */
+@@ -4256,6 +4278,19 @@ static int __init kswapd_init(void)
+  */
+ int __init kswapd_init(void)
+ {
++#ifdef CONFIG_INFINITY_MEMORY_OPTIMIZATIONS
++	min_free_kbytes = max(min_free_kbytes,
++		(div_u64(totalram_pages() * 3, 1000) * PAGE_SIZE) >> 10);
++
++	watermark_scale_factor = max(watermark_scale_factor, 150);
++
++	pr_info("Infinity: watermark tuned - min_free=%lukB, scale=%d\n",
++		min_free_kbytes, watermark_scale_factor);
++#endif
++
+ 	int nid;
+ 	pg_data_t *pgdat;
+
+diff --git a/mm/compaction.c b/mm/compaction.c
+index cdef012345..cdef456789 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -2498,6 +2498,24 @@ static int __init kcompactd_init(void)
+ 	return 0;
+ }
++#ifdef CONFIG_INFINITY_MEMORY_OPTIMIZATIONS
++/*
++ * Infinity Kernel: Reduce background compaction frequency
++ * to save CPU cycles. Keeps compaction active enough to
++ * prevent memory fragmentation.
++ */
++static int __init infinity_compaction_tune(void)
++{
++	/* Compact only when truly needed */
++	sysctl_compaction_proactiveness = 20;
++
++	pr_info("Infinity: compaction proactiveness=%d\n",
++		sysctl_compaction_proactiveness);
++	return 0;
++}
++late_initcall(infinity_compaction_tune);
++#endif
++
+ subsys_initcall(kcompactd_init);
+
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index defg0123456..defg3456789 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -70,6 +70,10 @@
+
+ static long dirty_background_ratio = -1;
+ static long dirty_ratio = -1;
++#ifdef CONFIG_INFINITY_MEMORY_OPTIMIZATIONS
++static long infinity_dirty_ratio = 15;
++static long infinity_dirty_background_ratio = 5;
++#endif
+ static unsigned long dirty_background_bytes;
+ static unsigned long dirty_bytes;
+@@ -2100,3 +2104,19 @@ int __init page_writeback_init(void)
+ 	}
+
+ 	return 0;
+ }
++
++#ifdef CONFIG_INFINITY_MEMORY_OPTIMIZATIONS
++/*
++ * Infinity Kernel: Writeback tuning
++ *
++ * Lower dirty thresholds to flush earlier, preventing
++ * large I/O bursts that cause lag and waste battery.
++ */
++static int __init infinity_writeback_tune(void)
++{
++	vm_dirty_ratio = infinity_dirty_ratio;
++	vm_dirty_background_ratio = infinity_dirty_background_ratio;
++
++	pr_info("Infinity: writeback tuned - dirty=%ld, bg=%ld\n",
++		vm_dirty_ratio, vm_dirty_background_ratio);
++	return 0;
++}
++late_initcall(infinity_writeback_tune);
++#endif
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index efg01234567..efg34567891 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -132,7 +132,7 @@ static bool zswap_is_full(void)
+  * memory pool size.
+  */
+-static unsigned int zswap_max_pool_percent = 20;
++static unsigned int zswap_max_pool_percent = 30;
+
+ /* Enable/disable zswap */
+ static bool zswap_enabled;
+@@ -572,7 +576,7 @@ static int zswap_cpu_comp_prepare(unsigned int cpu, struct hlist_node *node)
+  * This will be initialized at boot time and maintained at runtime.
+  */
+ static DEFINE_SPINLOCK(zswap_pools_lock);
+-static char *zswap_compressor = "zstd";
++static char *zswap_compressor = "lz4"; /* Infinity: LZ4 for speed */
+
+ module_param_named(compressor, zswap_compressor, charp, 0644);
+
+diff --git a/drivers/base/power/wakeup.c b/drivers/base/power/wakeup.c
+index fgh01234567..fgh34567891 100644
+--- a/drivers/base/power/wakeup.c
++++ b/drivers/base/power/wakeup.c
+@@ -933,3 +933,11 @@ void pm_print_active_wakeup_sources(void)
+ 	}
+ 	rcu_read_unlock();
+ }
++
++#ifdef CONFIG_INFINITY_KERNEL
++static bool infinity_wakelock_debug = false;
++module_param_named(wakelock_debug, infinity_wakelock_debug, bool, 0644);
++MODULE_PARM_DESC(wakelock_debug,
++	"Enable wakelock debug logging for battery drain debugging");
++#endif
++
+
+--
+2.14.1

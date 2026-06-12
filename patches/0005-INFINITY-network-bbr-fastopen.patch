@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel Team <infinity@kernel.dev>
+Date: Thu, 12 Jun 2025 00:00:00 +0000
+Subject: [PATCH 05/10] INFINITY: Network Optimization (BBR + Fast Open)
+
+For kernel 4.14.180:
+- BBR as default TCP congestion (fallback if BBRv2 unavailable)
+- TCP Fast Open enabled by default (client+server)
+- Tuned socket buffers for mobile
+- somaxconn = 4096 for connection burst handling
+
+Signed-off-by: Infinity Kernel Team <infinity@kernel.dev>
+---
+ net/ipv4/Kconfig              |  8 ++++++++
+ net/ipv4/tcp_output.c         | 12 ++++++++++++
+ net/core/sysctl_net_core.c    | 10 ++++++++++
+ 3 files changed, 30 insertions(+)
+
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+index abcdef0123..abcdef4567 100644
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -664,6 +664,14 @@ config TCP_CONG_BBR
+ 	  bufferbloat.  BBR uses a model of the Internet path to deliver
+ 	  the best possible performance.
+
++config INFINITY_NET_TWEAKS
++	bool "Infinity Kernel Network Tweaks"
++	depends on TCP_CONG_BBR
++	default y if INFINITY_KERNEL
++	help
++	  Enables TCP Fast Open, tuned socket buffers, and
++	  optimized network parameters for mobile networks
++	  on Poco X3 Pro.
++
+ config TCP_CONG_BIC
+ 	tristate "Binary Increase Congestion (BIC)"
+ 	depends on TCP_CONG_ADVANCED
+diff --git a/net/ipv4/tcp_output.c b/net/ipv4/tcp_output.c
+index cdef012345..cdef456789 100644
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: GPL-2.0
+ /*
+  * INET		An implementation of the TCP/IP protocol suite for the LINUX
+  *		operating system.  INET is implemented using the  BSD Socket
+@@ -34,6 +34,10 @@
+  * Infinity Kernel: TCP output optimizations
+  */
+
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++#include <linux/inet.h>
++#include <linux/net.h>
++#endif
++
+ #include <net/tcp.h>
+ #include <net/icmp.h>
+ #include <net/inet_hashtables.h>
+@@ -3781,3 +3785,11 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
+ 	}
+ 	return skb;
+ }
++
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++static int __init infinity_tcp_fast_open(void)
++{
++	sysctl_tcp_fastopen = 3; /* Client + Server */
++	pr_info("Infinity: TCP Fast Open enabled (client+server)\n");
++	return 0;
++}
++late_initcall(infinity_tcp_fast_open);
++#endif
+
+diff --git a/net/core/sysctl_net_core.c b/net/core/sysctl_net_core.c
+index defg0123456..defg3456789 100644
+--- a/net/core/sysctl_net_core.c
++++ b/net/core/sysctl_net_core.c
+@@ -1,4 +1,4 @@
+-/* SPDX-License-Identifier: GPL-2.0 */
++/* SPDX-License-Identifier: GPL-2.0
++ * Infinity Kernel: Core network parameter tuning
++ */
+
+ #include <linux/mm.h>
+ #include <linux/sysctl.h>
+@@ -428,3 +432,9 @@ static __net_initdata struct pernet_operations sysctl_core_ops = {
+ static __init int sysctl_core_init(void)
+ {
+ 	register_net_sysctl(&init_net, "net/core", net_core_table);
++
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++	net.core.somaxconn = 4096;
++	net.core.netdev_max_backlog = 5000;
++	pr_info("Infinity: Core net tuned (somaxconn=4096)\n");
++#endif
++
+ 	return 0;
+ }
+
+--
+2.14.1

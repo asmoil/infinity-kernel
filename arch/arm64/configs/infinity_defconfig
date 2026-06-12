@@ -1,0 +1,802 @@
+#
+# Infinity Kernel Defconfig for Poco X3 Pro (vayu/bhima)
+# Based on SM8150 / Qualcomm Snapdragon 732G (trinket)
+# Optimized for: Performance + Battery Balance
+# Features: Charging Bypass, SUFS, KernelSU/Magisk/APatch Support
+#
+
+# ==============================================================================
+# GENERAL CONFIGURATION
+# ==============================================================================
+CONFIG_LOCALVERSION="-InfinityKernel"
+CONFIG_LOCALVERSION_AUTO=y
+CONFIG_DEFAULT_HOSTNAME="infinity"
+CONFIG_SWAP=y
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_USELIB=n
+CONFIG_AUDIT=y
+CONFIG_BSD_PROCESS_ACCT=y
+CONFIG_BSD_PROCESS_ACCT_V3=y
+CONFIG_TASKSTATS=y
+CONFIG_TASK_DELAY_ACCT=y
+CONFIG_TASK_XACCT=y
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+CONFIG_LOG_BUF_SHIFT=19
+CONFIG_PRINTK=y
+CONFIG_BUG=y
+CONFIG_BASE_FULL=n
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EVENTFD=y
+CONFIG_AIO=y
+CONFIG_ADVISE_SYSCALLS=y
+CONFIG_MEMBARRIER=y
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+CONFIG_KALLSYMS_BASE_RELATIVE=y
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_MODULE_FORCE_UNLOAD=y
+CONFIG_MODVERSIONS=y
+CONFIG_MODULE_SRCVERSION_ALL=y
+CONFIG_MODULE_SIG=y
+CONFIG_MODULE_SIG_FORCE=y
+CONFIG_MODULE_SIG_SHA256=y
+CONFIG_MODULES_TREE_LOOKUP=y
+CONFIG_BLOCK=y
+CONFIG_BLOCK_LEGACY_AUTOLOAD=n
+
+# ==============================================================================
+# 64-BIT KERNEL
+# ==============================================================================
+CONFIG_64BIT=y
+CONFIG_SMP=y
+CONFIG_ARM64=y
+CONFIG_ARM64_CONT_SHIFT=4
+CONFIG_ARCH_MSM=y
+CONFIG_ARCH_QCOM=y
+CONFIG_BOARD_VAYU=y
+CONFIG_BOARD_BHIMA=y
+
+# ==============================================================================
+# CPU FREQUENCY & GOVERNORS - PERFORMANCE OPTIMIZED
+# ==============================================================================
+CONFIG_CPU_FREQ=y
+CONFIG_CPU_FREQ_GOV_ATTR_SET=y
+CONFIG_CPU_FREQ_GOV_COMMON=y
+CONFIG_CPU_FREQ_STAT=y
+CONFIG_CPU_FREQ_TIMES=y
+
+# Governors
+CONFIG_CPU_FREQ_DEFAULT_GOV="interactive"
+CONFIG_CPU_FREQ_GOV_PERFORMANCE=y
+CONFIG_CPU_FREQ_GOV_POWERSAVE=y
+CONFIG_CPU_FREQ_GOV_USERSPACE=y
+CONFIG_CPU_FREQ_GOV_ONDEMAND=y
+CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
+CONFIG_CPU_FREQ_GOV_INTERACTIVE=y
+CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+CONFIG_CPU_FREQ_GOV_WALT=y
+CONFIG_CPU_FREQ_GOV_BOOST=y
+CONFIG_CPU_FREQ_GOV_HYPER=y
+CONFIG_CPU_FREQ_GOV_DARKNESS=y
+CONFIG_CPU_FREQ_GOV_ALUCARD=y
+
+# CPU Idle
+CONFIG_CPU_IDLE=y
+CONFIG_CPU_IDLE_GOV_LADDER=y
+CONFIG_CPU_IDLE_GOV_MENU=y
+CONFIG_CPU_IDLE_GOV_TEO=y
+CONFIG_DT_IDLE_STATES=y
+
+# HZ Tick Rate - 300Hz for better responsiveness
+CONFIG_HZ_300=y
+CONFIG_HZ=300
+
+# ==============================================================================
+# SCHEDULER - OPTIMIZED FOR RESPONSIVENESS
+# ==============================================================================
+CONFIG_SCHED_MC=y
+CONFIG_SCHED_SMT=y
+CONFIG_SCHED_AUTOGROUP=y
+CONFIG_SCHEDSTATS=y
+CONFIG_SCHED_DEBUG=n
+CONFIG_CFS_BANDWIDTH=y
+CONFIG_RT_GROUP_SCHED=y
+CONFIG_CGROUP_CPUACCT=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_CGROUP_PERF=y
+CONFIG_CGROUP_SCHEDTUNE=y
+CONFIG_SCHED_TUNE=y
+
+# ==============================================================================
+# MEMORY MANAGEMENT - OPTIMIZED
+# ==============================================================================
+CONFIG_SPARSEMEM_MANUAL=y
+CONFIG_SPARSEMEM=y
+CONFIG_SPARSEMEM_EXTREME=y
+CONFIG_SPARSEMEM_VMEMMAP_ENABLE=y
+CONFIG_SPARSEMEM_VMEMMAP=y
+CONFIG_HAVE_FAST_GUP=y
+CONFIG_TRANSPARENT_HUGEPAGE=y
+CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y
+CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y
+CONFIG_CMA=y
+CONFIG_CMA_AREAS=7
+CONFIG_CMA_SIZE_MBYTES=256
+CONFIG_ZRAM=y
+CONFIG_ZRAM_WRITEBACK=y
+CONFIG_ZRAM_MEMORY_TRACKING=y
+CONFIG_ZSMALLOC=y
+CONFIG_ZSMALLOC_STAT=y
+CONFIG_MEMORY_ISOLATION=y
+CONFIG_COMPACTION=y
+CONFIG_MIGRATION=y
+CONFIG_HWPOISON_INJECT=n
+CONFIG_KSM=y
+CONFIG_KSM_MERGE_TYPE_NODE_AND_PAGE=y
+CONFIG_DEFAULT_MMAP_MIN_ADDR=4096
+CONFIG_LRU_GEN=y
+CONFIG_LRU_GEN_ENABLED=y
+
+# ==============================================================================
+# VIRTUAL MEMORY & SWAPPINESS
+# ==============================================================================
+CONFIG_SWP_FILE=y
+CONFIG_SHMEM=y
+
+# ==============================================================================
+# I/O SCHEDULERS
+# ==============================================================================
+CONFIG_IOSCHED_NOOP=y
+CONFIG_IOSCHED_DEADLINE=y
+CONFIG_IOSCHED_CFQ=y
+CONFIG_CFQ_GROUP_IOSCHED=y
+CONFIG_IOSCHED_BFQ=y
+CONFIG_BFQ_GROUP_IOSCHED=y
+CONFIG_IOSCHED_MAPLE=y
+CONFIG_IOSCHED_SIO=y
+CONFIG_IOSCHED_FIOPS=y
+CONFIG_IOSCHED_ZEN=y
+CONFIG_IOSCHED_TRIPNDROID=y
+CONFIG_DEFAULT_IOSCHED="maple"
+CONFIG_MQ_IOSCHED_DEADLINE=y
+CONFIG_MQ_IOSCHED_KYBER=y
+CONFIG_IOSCHED_BMQ=y
+
+# ==============================================================================
+# FSYNC & F2FS OPTIMIZATION
+# ==============================================================================
+CONFIG_FSYNC=y
+CONFIG_F2FS_FS=y
+CONFIG_F2FS_STAT_FS=y
+CONFIG_F2FS_FS_XATTR=y
+CONFIG_F2FS_FS_POSIX_ACL=y
+CONFIG_F2FS_FS_SECURITY=y
+CONFIG_F2FS_CHECK_FS=y
+CONFIG_F2FS_FS_COMPRESSION=y
+CONFIG_F2FS_FS_LZO=y
+CONFIG_F2FS_FS_LZ4=y
+CONFIG_F2FS_FS_ZSTD=y
+CONFIG_F2FS_IO_TRACE=y
+CONFIG_F2FS_FAULT_INJECTION=n
+
+# ==============================================================================
+# SUFS (Simple Union File System) SUPPORT
+# ==============================================================================
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_FILE_CACHE=y
+CONFIG_SQUASHFS_DECOMP_SINGLE=y
+CONFIG_SQUASHFS_DECOMP_MULTI=y
+CONFIG_SQUASHFS_DECOMP_MULTI_PERCPU=y
+CONFIG_SQUASHFS_XATTR=y
+CONFIG_SQUASHFS_ZLIB=y
+CONFIG_SQUASHFS_LZ4=y
+CONFIG_SQUASHFS_LZO=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_OVERLAY_FS=y
+CONFIG_OVERLAY_FS_REDIRECT_ALWAYS_FOLLOW=y
+CONFIG_OVERLAY_FS_INDEX=y
+CONFIG_OVERLAY_FS_METACOPY=y
+
+# ==============================================================================
+# ROOT MANAGER SUPPORT
+# ==============================================================================
+# KernelSU Support
+CONFIG_KPROBES=y
+CONFIG_UPROBES=y
+CONFIG_MODULES_SIG=n
+CONFIG_KALLSYMS_ALL=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_FUNCTION_GRAPH_TRACER=y
+CONFIG_DYNAMIC_FTRACE=y
+CONFIG_FTRACE_SYSCALLS=y
+CONFIG_STACK_TRACER=y
+CONFIG_HIST_TRIGGERS=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_UPROBE_EVENTS=y
+CONFIG_BPF_EVENTS=y
+
+# ==============================================================================
+# CHARGING CONTROL / BYPASS
+# ==============================================================================
+CONFIG_POWER_SUPPLY=y
+CONFIG_POWER_SUPPLY_HWMON=y
+CONFIG_BATTERY_BQ27XXX=y
+CONFIG_BATTERY_BQ27XXX_I2C=y
+CONFIG_CHARGER_BQ25890=y
+CONFIG_INFINITY_CHARGING_CONTROL=y
+CONFIG_INFINITY_CHARGING_BYPASS=y
+
+# ==============================================================================
+# SOUND / AUDIO
+# ==============================================================================
+CONFIG_SOUND=y
+CONFIG_SND=y
+CONFIG_SND_SOC=y
+CONFIG_SND_SOC_QCOM=y
+CONFIG_SND_SOC_QDSP6_COMMON=y
+
+# ==============================================================================
+# BLUETOOTH
+# ==============================================================================
+CONFIG_BT=y
+CONFIG_BT_BREDR=y
+CONFIG_BT_RFCOMM=y
+CONFIG_BT_RFCOMM_TTY=y
+CONFIG_BT_BNEP=y
+CONFIG_BT_BNEP_MC_FILTER=y
+CONFIG_BT_BNEP_PROTO_FILTER=y
+CONFIG_BT_HIDP=y
+CONFIG_BT_LE=y
+CONFIG_BT_QCOMSND=y
+CONFIG_BT_HCISMD=y
+
+# ==============================================================================
+# WIRELESS / WIFI
+# ==============================================================================
+CONFIG_WIRELESS=y
+CONFIG_CFG80211=y
+CONFIG_CFG80211_DEFAULT_PS=y
+CONFIG_MAC80211=y
+CONFIG_MAC80211_HAS_RC=y
+CONFIG_MAC80211_RC_MINSTREL=y
+CONFIG_MAC80211_RC_MINSTREL_HT=y
+CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y
+CONFIG_WLAN=y
+CONFIG_QCOM_CFG80211=y
+CONFIG_WCNSS_CORE=y
+
+# ==============================================================================
+# USB / THERMAL / MISC
+# ==============================================================================
+CONFIG_USB=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_MASS_STORAGE=y
+CONFIG_USB_CONFIGFS_F_FS=y
+CONFIG_USB_CONFIGFS_UEVENT=y
+CONFIG_USB_CONFIGFS_F_UAC1=y
+CONFIG_USB_CONFIGFS_F_UAC2=y
+CONFIG_USB_CONFIGFS_F_MIDI=y
+
+# Thermal
+CONFIG_THERMAL=y
+CONFIG_THERMAL_GOV_FAIR_SHARE=y
+CONFIG_THERMAL_GOV_STEP_WISE=y
+CONFIG_THERMAL_GOV_USER_SPACE=y
+CONFIG_CPU_THERMAL=y
+CONFIG_DEVFREQ_THERMAL=y
+CONFIG_QCOM_SPMI_TEMP_ALARM=y
+CONFIG_QCOM_THERMAL_LIMITS=y
+CONFIG_INFINITY_THERMAL_PROFILES=y
+
+# ==============================================================================
+# GPU / ADRENO
+# ==============================================================================
+CONFIG_DRM=y
+CONFIG_DRM_MSM=y
+CONFIG_DRM_MSM_GPU_SVM=y
+CONFIG_QCOM_ADRENO_DEFAULT_GOVERNOR="msm-adreno-tz"
+CONFIG_MSM_ADRENO=y
+CONFIG_MSM_KGSL=y
+CONFIG_MSM_KGSL_2D=y
+CONFIG_KGSL_PERF=y
+CONFIG_KGSL_DRAWCTXT_HANG_DETECT=n
+CONFIG_MSM_KGSL_CORE_EMBEDDED=n
+
+# ==============================================================================
+# VIDEO / CAMERA
+# ==============================================================================
+CONFIG_VIDEO_DEV=y
+CONFIG_VIDEO_V4L2=y
+CONFIG_VIDEO_V4L2_SUBDEV_API=y
+CONFIG_MEDIA_CAMERA_SUPPORT=y
+CONFIG_VIDEOBUF2_DMA_CONTIG=y
+CONFIG_VIDEOBUF2_DMA_SG=y
+CONFIG_V4L_PLATFORM_DRIVERS=y
+CONFIG_MSMB_CAMERA=y
+CONFIG_MSMB_JPEG=y
+CONFIG_MSMB_VFE=y
+CONFIG_MSMB_CPP=y
+CONFIG_MSM_CAMERA=y
+
+# ==============================================================================
+# DISPLAY / FRAMEBUFFER
+# ==============================================================================
+CONFIG_FB=y
+CONFIG_FB_MSM=y
+CONFIG_FB_MSM_MDSS=y
+CONFIG_FB_MSM_BACKLIGHT=y
+CONFIG_DRM_PANEL=y
+CONFIG_DRM_PANEL_SAMSUNG=y
+
+# ==============================================================================
+# TOUCHSCREEN
+# ==============================================================================
+CONFIG_TOUCHSCREEN_FTS=y
+CONFIG_TOUCHSCREEN_ATMEL_MXT=y
+CONFIG_TOUCHSCREEN_SYNAPTICS_DSX=y
+CONFIG_TOUCHSCREEN_GT9XX=y
+
+# ==============================================================================
+# SECURITY
+# ==============================================================================
+CONFIG_SECURITY=y
+CONFIG_SECURITY_NETWORK=y
+CONFIG_SECURITY_SELINUX=y
+CONFIG_SECURITY_SELINUX_BOOTPARAM=y
+CONFIG_SECURITY_SELINUX_DEVELOP=y
+CONFIG_SECURITY_SELINUX_CHECKREQPROT_VALUE=0
+CONFIG_SECURITY_APPARMOR=n
+CONFIG_INTEGRITY=y
+CONFIG_INTEGRITY_SIGNATURE=y
+CONFIG_INTEGRITY_ASYMMETRIC_KEYS=y
+CONFIG_KEYS=y
+
+# ==============================================================================
+# DEBUGGING (minimal for production)
+# ==============================================================================
+CONFIG_DEBUG_INFO=n
+CONFIG_DEBUG_INFO_REDUCED=n
+CONFIG_MAGIC_SYSRQ=y
+CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0
+CONFIG_PANIC_TIMEOUT=5
+CONFIG_DETECT_HUNG_TASK=y
+CONFIG_BOOTPARAM_HUNG_TASK_PANIC=n
+CONFIG_WQ_WATCHDOG=n
+
+# ==============================================================================
+# INFINITY KERNEL SPECIFIC TUNABLES
+# ==============================================================================
+CONFIG_INFINITY_KERNEL=y
+CONFIG_INFINITY_CPU_BOOST=y
+CONFIG_INFINITY_GPU_TWEAKS=y
+CONFIG_INFINITY_MEM_OPTIMIZATIONS=y
+CONFIG_INFINITY_NET_TWEAKS=y
+CONFIG_INFINITY_SOUND_CONTROL=y
+CONFIG_INFINITY_IO_SCHED_BOOST=y
+CONFIG_INFINITY_WAKE_LOCK_DEBUG=n
+CONFIG_INFINITY_VOLTAGE_CONTROL=y
+CONFIG_INFINITY_DISPLAY_PANEL_SETTINGS=y
+
+# ==============================================================================
+# FILE SYSTEMS
+# ==============================================================================
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
+CONFIG_EXT4_FS_POSIX_ACL=y
+CONFIG_EXT4_FS_SECURITY=y
+CONFIG_JBD2=y
+CONFIG_FS_MBCACHE=y
+CONFIG_REISERFS_FS=n
+CONFIG_JFS_FS=n
+CONFIG_XFS_FS=y
+CONFIG_XFS_QUOTA=y
+CONFIG_XFS_POSIX_ACL=y
+CONFIG_XFS_RT=y
+CONFIG_BTRFS_FS=y
+CONFIG_BTRFS_FS_POSIX_ACL=y
+CONFIG_NILFS2_FS=n
+CONFIG_FAT_FS=y
+CONFIG_MSDOS_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_NTFS_FS=y
+CONFIG_NTFS_RW=y
+CONFIG_NTFS3_FS=y
+CONFIG_NTFS3_LZNT1=y
+CONFIG_NTFS3_FS_POSIX_ACL=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_CONFIGFS_FS=y
+CONFIG_EFIVAR_FS=y
+
+# ==============================================================================
+# NETWORKING
+# ==============================================================================
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_IP_MULTICAST=y
+CONFIG_IP_ADVANCED_ROUTER=y
+CONFIG_IP_MULTIPLE_TABLES=y
+CONFIG_IP_ROUTE_MULTIPATH=y
+CONFIG_IP_ROUTE_VERBOSE=y
+CONFIG_NET_IPIP=n
+CONFIG_SYN_COOKIES=y
+CONFIG_NETFILTER=y
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_CONNTRACK_MARK=y
+CONFIG_NET_SCHED=y
+CONFIG_NET_SCH_FQ_CODEL=y
+CONFIG_NET_SCH_CAKE=y
+CONFIG_NET_CLS_CGROUP=y
+CONFIG_NET_SCH_FQ=y
+CONFIG_TCP_CONG_ADVANCED=y
+CONFIG_TCP_CONG_BBR=y
+CONFIG_TCP_CONG_BBR2=y
+CONFIG_DEFAULT_BBR=y
+CONFIG_DEFAULT_TCP_CONG="bbr"
+CONFIG_TCP_MD5SIG=y
+CONFIG_IPV6=y
+CONFIG_IPV6_ROUTER_PREF=y
+CONFIG_IPV6_MULTIPLE_TABLES=y
+
+# ==============================================================================
+# DRM / MEDIA / V4L2
+# ==============================================================================
+CONFIG_MEDIA_SUPPORT=y
+CONFIG_MEDIA_SUPPORT_FILTER=y
+CONFIG_V4L_USB_DRIVERS=n
+CONFIG_RADIO_ADAPTERS=n
+CONFIG_CEC_CORE=n
+
+# ==============================================================================
+# POWER MANAGEMENT
+# ==============================================================================
+CONFIG_PM=y
+CONFIG_PM_AUTOSLEEP=y
+CONFIG_PM_WAKELOCKS=y
+CONFIG_PM_WAKELOCKS_LIMIT=0
+CONFIG_PM_WAKELOCKS_GC=y
+CONFIG_SUSPEND=y
+CONFIG_SUSPEND_FREEZER=y
+CONFIG_HIBERNATION=n
+CONFIG_PM_SLEEP=y
+CONFIG_PM_SLEEP_DEBUG=n
+CONFIG_PM_CLK=y
+CONFIG_PM_GENERIC_DOMAINS=y
+CONFIG_PM_GENERIC_DOMAINS_SLEEP=y
+CONFIG_PM_GENERIC_DOMAINS_OF=y
+CONFIG_CPU_PM=y
+CONFIG_ARCH_SUSPEND_POSSIBLE=y
+
+# ==============================================================================
+# DEVICETREE
+# ==============================================================================
+CONFIG_OF=y
+CONFIG_OF_FLATTREE=y
+CONFIG_OF_IRQ=y
+CONFIG_OF_NET=y
+CONFIG_OF_RESERVED_MEM=y
+CONFIG_OF_OVERLAY=y
+
+# ==============================================================================
+# VFS CACHE OPTIMIZATION
+# ==============================================================================
+CONFIG_FUSE_FS=y
+CONFIG_CUSE=y
+CONFIG_VFS_CACHING=n
+CONFIG_SYSFS_SYSCALL=y
+
+# ==============================================================================
+# KERNEL COMPRESSION
+# ==============================================================================
+CONFIG_RD_GZIP=n
+CONFIG_RD_BZIP2=n
+CONFIG_RD_LZMA=n
+CONFIG_RD_XZ=y
+CONFIG_RD_LZO=y
+CONFIG_RD_LZ4=y
+CONFIG_RD_ZSTD=y
+CONFIG_INITRAMFS_SOURCE=""
+CONFIG_INITRAMFS_ROOT_UID=0
+CONFIG_INITRAMFS_ROOT_GID=0
+CONFIG_RD_LZ4=n
+
+# ==============================================================================
+# MISC
+# ==============================================================================
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_STANDALONE=y
+CONFIG_PREVENT_FIRMWARE_BUILD=n
+CONFIG_FW_LOADER=y
+CONFIG_FW_LOADER_USER_HELPER=y
+CONFIG_ALLOW_DEV_COREDUMP=n
+CONFIG_DEBUG_DRIVER=n
+CONFIG_DEBUG_DEVRES=n
+CONFIG_SYS_HYPERVISOR=n
+CONFIG_GENERIC_CPU_AUTOPROBE=y
+CONFIG_REGMAP=y
+CONFIG_REGMAP_I2C=y
+CONFIG_REGMAP_SPI=y
+CONFIG_REGMAP_MMIO=y
+CONFIG_DMA_SHARED_BUFFER=y
+CONFIG_CMA_SIZE_SEL_MBYTES=y
+CONFIG_DMA_CMA=y
+CONFIG_PRINT_QUOTA_WARNING=y
+CONFIG_QUOTA=y
+CONFIG_QUOTA_NETLINK_INTERFACE=y
+CONFIG_QUOTACTL=y
+CONFIG_AUTOFS4_FS=y
+CONFIG_AUTOFS_FS=y
+CONFIG_FUSE_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_FANOTIFY=y
+CONFIG_FANOTIFY_ACCESS_PERMISSIONS=y
+CONFIG_INOTIFY_USER=y
+CONFIG_PROC_SYSCTL=y
+CONFIG_PROC_PAGE_MONITOR=y
+CONFIG_PROC_KCORE=y
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_MEMCG=y
+CONFIG_MEMCG_SWAP=y
+CONFIG_MEMCG_KMEM=y
+CONFIG_BLK_CGROUP=y
+CONFIG_CGROUP_WRITEBACK=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_CGROUP_CPUACCT=y
+CONFIG_CGROUP_PERF=y
+CONFIG_CGROUP_BPF=y
+CONFIG_CGROUP_MISC=y
+CONFIG_CGROUP_DEBUG=n
+CONFIG_SLAB_FREELIST_RANDOM=y
+CONFIG_SLUB=y
+CONFIG_SLUB_CPU_PARTIAL=y
+# Use SLUB allocator for better performance
+CONFIG_SLAB=n
+CONFIG_SLOB=n
+
+# ==============================================================================
+# INFINITY GAMING MODE
+# ==============================================================================
+CONFIG_INFINITY_GAMING_MODE=y
+CONFIG_INFINITY_TOUCH_BOOST=y
+CONFIG_INFINITE_INPUT_BOOST=y
+CONFIG_INFINITY_GAME_CHARGING_BYPASS=y
+CONFIG_INFINITY_GPU_MIN_FREQ_LOCK=y
+
+# ==============================================================================
+# BBRv2 Congestion Control (Better network performance)
+# ==============================================================================
+CONFIG_TCP_CONG_BBR2=m
+CONFIG_DEFAULT_TCP_CONG="bbr"
+
+# ==============================================================================
+# ANDROID BINDERS & ASHMEM
+# ==============================================================================
+CONFIG_ANDROID_BINDER_IPC=y
+CONFIG_ANDROID_BINDERFS=y
+CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"
+CONFIG_ASHMEM=y
+
+# ==============================================================================
+# Poco X3 Pro Specific Hardware
+# ==============================================================================
+CONFIG_MSM_SMEM=y
+CONFIG_MSM_SMP2P=y
+CONFIG_QCOM_SMEM=y
+CONFIG_QCOM_SMP2P=y
+CONFIG_QCOM_SMSM=y
+CONFIG_QCOM_SOCINFO=y
+CONFIG_QCOM_WDT=y
+CONFIG_MSM_RPM_SMD=y
+CONFIG_MSM_RPMH=y
+CONFIG_QCOM_RPMH=y
+CONFIG_INTERCONNECT=y
+CONFIG_INTERCONNECT_QCOM=y
+CONFIG_INTERCONNECT_QCOM_SM8150=y
+CONFIG_QCOM_AOSS_QMP=y
+CONFIG_QCOM_RPMH_RSC=y
+CONFIG_RPMSG=y
+CONFIG_RPMSG_QCOM_GLINK=y
+CONFIG_RPMSG_QCOM_SMD=y
+CONFIG_MSM_SERVICE_NOTIFIER=y
+
+# ==============================================================================
+# ION Memory Allocator
+# ==============================================================================
+CONFIG_ION=y
+CONFIG_ION_HEAP_SYSTEM=y
+CONFIG_ION_HEAP_CARVEOUT=y
+CONFIG_ION_HEAP_CHUNK=y
+CONFIG_ION_CMA_HEAP=y
+
+# ==============================================================================
+# RANDOM / ENTROPY
+# ==============================================================================
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_MSM=y
+
+# ==============================================================================
+# INPUT
+# ==============================================================================
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_INPUT_KEYRESET=y
+CONFIG_INPUT_UINPUT=y
+CONFIG_KEYBOARD_GPIO=y
+CONFIG_INPUT_TOUCHSCREEN=y
+
+# ==============================================================================
+# SERIAL / UART
+# ==============================================================================
+CONFIG_SERIAL_MSM=y
+CONFIG_SERIAL_MSM_CONSOLE=y
+CONFIG_SERIAL_CORE=y
+CONFIG_SERIAL_CORE_CONSOLE=y
+CONFIG_DEVMEM=y
+CONFIG_DEVKMEM=y
+
+# ==============================================================================
+# MTD / PARTITIONS
+# ==============================================================================
+CONFIG_MTD=y
+CONFIG_MTD_PARTITIONS=y
+CONFIG_MTD_CMDLINE_PARTS=y
+
+# ==============================================================================
+# NVS / QPNP
+# ==============================================================================
+CONFIG_SPMI=y
+CONFIG_SPMI_MSM_PMIC_ARB=y
+CONFIG_MFD_QCOM_PM8008=y
+CONFIG_QCOM_SPMI_VADC=y
+
+# ==============================================================================
+# LEDS
+# ==============================================================================
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_QPNP=y
+CONFIG_LEDS_QPNP_FLASH=y
+CONFIG_LEDS_TRIGGERS=y
+CONFIG_LEDS_TRIGGER_TIMER=y
+CONFIG_LEDS_TRIGGER_GPIO=y
+
+# ==============================================================================
+# REGULATOR
+# ==============================================================================
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_REGULATOR_QCOM_SPMI=y
+CONFIG_REGULATOR_QCOM_LABIBB=y
+
+# ==============================================================================
+# CLK
+# ==============================================================================
+CONFIG_COMMON_CLK_QCOM=y
+
+# ==============================================================================
+# PHY
+# ==============================================================================
+CONFIG_GENERIC_PHY=y
+CONFIG_PHY_QCOM_QMP=y
+CONFIG_PHY_QCOM_QUSB2=y
+CONFIG_PHY_QCOM_SNPS_FEMTO_V2=y
+CONFIG_PHY_QCOM_USB_HS=y
+CONFIG_USB_QCOM_QUSB_PHY=y
+
+# ==============================================================================
+# RESET CONTROLLER
+# ==============================================================================
+CONFIG_RESET_CONTROLLER=y
+CONFIG_RESET_QCOM_PDC=y
+
+# ==============================================================================
+# PERCPU
+# ==============================================================================
+CONFIG_SMP=y
+CONFIG_NR_CPUS=8
+CONFIG_HOTPLUG_CPU=y
+
+# ==============================================================================
+# CRC / CRYPTO
+# ==============================================================================
+CONFIG_CRYPTO=y
+CONFIG_CRYPTO_ALGAPI=y
+CONFIG_CRYPTO_AEAD=y
+CONFIG_CRYPTO_AEAD2=y
+CONFIG_CRYPTO_BLKCIPHER=y
+CONFIG_CRYPTO_BLKCIPHER2=y
+CONFIG_CRYPTO_HASH=y
+CONFIG_CRYPTO_HASH2=y
+CONFIG_CRYPTO_RNG=y
+CONFIG_CRYPTO_RNG2=y
+CONFIG_CRYPTO_PCOMP=y
+CONFIG_CRYPTO_PCOMP2=y
+CONFIG_CRYPTO_MANAGER=y
+CONFIG_CRYPTO_MANAGER2=y
+CONFIG_CRYPTO_USER=y
+CONFIG_CRYPTO_CBC=y
+CONFIG_CRYPTO_CTR=y
+CONFIG_CRYPTO_CTS=y
+CONFIG_CRYPTO_ECB=y
+CONFIG_CRYPTO_LRW=y
+CONFIG_CRYPTO_XTS=y
+CONFIG_CRYPTO_CMAC=y
+CONFIG_CRYPTO_HMAC=y
+CONFIG_CRYPTO_SHA1=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_SHA512=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_AES_ARM64=y
+CONFIG_CRYPTO_AES_ARM64_CE=y
+CONFIG_CRYPTO_AES_ARM64_CE_BLK=y
+CONFIG_CRYPTO_AES_ARM64_NEON_BLK=y
+CONFIG_CRYPTO_CRC32C=y
+CONFIG_CRYPTO_CRC32=y
+CONFIG_CRYPTO_ZSTD=y
+CONFIG_CRYPTO_LZ4=y
+CONFIG_CRYPTO_LZO=y
+CONFIG_CRYPTO_842=y
+CONFIG_CRYPTO_DEFLATE=y
+CONFIG_CRYPTO_ANSI_CPRNG=y
+CONFIG_CRYPTO_DRBG=y
+CONFIG_CRYPTO_DRBG_HMAC=y
+CONFIG_CRYPTO_JITTERENTROPY=y
+CONFIG_CRYPTO_SHA256_ARM64=y
+CONFIG_CRYPTO_SHA1_ARM64_CE=y
+CONFIG_CRYPTO_SHA256_ARM64=y
+CONFIG_CRYPTO_SHA512_ARM64=y
+CONFIG_CRYPTO_SHA512_ARM64_CE=y
+CONFIG_ASYMMETRIC_KEY_TYPE=y
+CONFIG_ASYMMETRIC_PUBLIC_KEY_SUBTYPE=y
+CONFIG_X509_CERTIFICATE_PARSER=y
+CONFIG_PKCS7_MESSAGE_PARSER=y
+CONFIG_SYSTEM_TRUSTED_KEYRING=y
+CONFIG_SYSTEM_TRUSTED_KEYS=""
+
+# ==============================================================================
+# PANTHER / INFINITY SPECIFIC TWEAKS
+# ==============================================================================
+# Disable unnecessary features for performance
+CONFIG_KPROBE_EVENTS=n
+CONFIG_UPROBE_EVENTS=n
+CONFIG_BPF_EVENTS=n
+CONFIG_FTRACE_SYSCALLS=n
+CONFIG_HIST_TRIGGERS=n
+CONFIG_FUNCTION_GRAPH_TRACER=n
+CONFIG_STACK_TRACER=n
+
+# Keep KPROBES/KSU support enabled
+CONFIG_KPROBES=y
+CONFIG_UPROBES=y
+CONFIG_FTRACE=y
+CONFIG_DYNAMIC_FTRACE=y
+
+# Enable BBRv2 for better network
+CONFIG_TCP_CONG_BBR2=y
+CONFIG_DEFAULT_BBR=y
+CONFIG_DEFAULT_TCP_CONG="bbr"
+
+# Gaming optimizations
+CONFIG_CPU_FREQ_GOV_INTERACTIVE=y
+CONFIG_SCHED_AUTOGROUP=y
+
+# Disable audit for performance
+CONFIG_AUDIT=n
+CONFIG_AUDITSYSCALL=n
