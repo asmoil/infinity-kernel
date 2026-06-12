@@ -1,2 +1,7 @@
-# Infinity Kernel Charging Driver Makefile
-obj-$(CONFIG_INFINITY_CHARGING_CONTROL) += infinity_charging_control.o
+#
+# Makefile for Infinity Charging Bypass Control
+#
+# Copyright (c) 2024 Infinity Kernel Project
+#
+
+obj-$(CONFIG_CHARGING_CONTROL)	+= infinity_charging_control.o

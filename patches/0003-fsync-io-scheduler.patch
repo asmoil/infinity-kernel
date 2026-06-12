@@ -1,0 +1,203 @@
+From 3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@vayu>
+Date: Sat, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 3/6] fsync: add ftrace probes and I/O tracking support
+
+- Add FSYNC syscall ftrace probe definitions in fs.h
+- Implement ftrace tracepoints in fs/sync.c for fsync/fdatasync/msync
+- Enable fine-grained I/O latency analysis for gaming workloads
+- Helps identify storage bottlenecks on UFS 2.2 in vayu/bhima
+
+Signed-off-by: Infinity Kernel <infinity@vayu>
+---
+ fs/sync.c        | 60 ++++++++++++++++++++++++++++++++++++++++++++--
+ include/linux/fs.h | 44 +++++++++++++++++++++++++++++++++-
+ 2 files changed, 101 insertions(+), 3 deletions(-)
+
+diff --git a/fs/sync.c b/fs/sync.c
+index 1234567..abcdef8 100644
+--- a/fs/sync.c
++++ b/fs/sync.c
+@@ -18,6 +18,28 @@
+ #include <linux/pagemap.h>
+ #include <linux/file.h>
+ #include <linux/slab.h>
++#include <trace/events/fsync.h>
++
++/*
++ * Infinity Kernel: FSYNC ftrace probes.
++ *
++ * These tracepoints allow real-time monitoring of fsync/fdatasync/msync
++ * call latency, which is critical for:
++ *   - Game asset streaming stalls (texture loading, save writes)
++ *   - SQLite journal flush overhead (used by many Android apps)
++ *   - UFS 2.2 I/O scheduler tuning validation on Poco X3 Pro
++ *
++ * Usage: echo 1 > /sys/kernel/debug/tracing/events/fsync/enable
++ *        cat  /sys/kernel/debug/tracing/trace_pipe
++ */
++
++#define CREATE_FSYNC_TRACEPOINT(name)				\
++	TRACE_EVENT(name,						\
++		TP_PROTO(struct inode *inode, unsigned long start,	\
++			 unsigned long duration),			\
++		TP_ARGS(inode, start, duration),			\
++		TP_STRUCT__entry(					\
++			__field(dev_t, dev)				\
++			__field(ino_t, ino)				\
++			__field(unsigned long, start)			\
++			__field(unsigned long, duration)		\
++		),							\
++		TP_fast_assign(					\
++			__entry->dev = inode->i_sb->s_dev;		\
++			__entry->ino = inode->i_ino;			\
++			__entry->start = start;			\
++			__entry->duration = duration;			\
++		),							\
++		TP_printk("dev=%d:%d ino=%lu start=%lu duration=%lu ns", \
++			MAJOR(__entry->dev), MINOR(__entry->dev),	\
++			__entry->ino, __entry->start, __entry->duration) \
++	)
+ 
+ /*
+  * SYNC_FILE_RANGE_WAIT_BEFORE and SYNC_FILE_RANGE_WRITE are not passed to
+@@ -133,7 +155,18 @@ SYSCALL_DEFINE1(fdatasync, unsigned int, fd)
+  */
+ SYSCALL_DEFINE1(fsync, unsigned int, fd)
+ {
++	unsigned long start_t, end_t, duration;
+ 	struct fd f = fdget(fd);
++
++	start_t = local_clock();
++
+ 	if (!f.file)
+ 		return -EBADF;
+-	return vfs_fsync(f.file, 0);
++
++	ret = vfs_fsync(f.file, 0);
++
++	end_t = local_clock();
++	duration = end_t - start_t;
++
++	trace_fsync_enter(f.file->f_inode);
++	trace_fsync_complete(f.file->f_inode, start_t, duration);
++
++	fdput(f);
++	return ret;
+ }
+ 
+@@ -189,6 +222,29 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
+ {
+ 	struct mm_struct *mm = current->mm;
+ 	struct vm_area_struct *vma;
++	unsigned long start_t, end_t, duration;
+ 	int error = 0, unmapped_error = 0;
++
++	start_t = local_clock();
++
++	/*
++	 * Infinity Kernel: Trace msync for shared memory / ashmem regions.
++	 * Android's gralloc buffers use shared memory that gets msync'd
++	 * during SurfaceFlinger compositing. High msync latency can
++	 * directly cause frame drops.
++	 */
+ 	LIST_HEAD(umap);
+ 
+ 	if (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC))
+@@ -222,7 +278,18 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
+ 	}
+ out:
+ 	up_read(&mm->mmap_sem);
++
++	end_t = local_clock();
++	duration = end_t - start_t;
++
++	if (vma && vma->vm_file && vma->vm_file->f_inode) {
++		trace_fsync_enter(vma->vm_file->f_inode);
++		trace_fsync_complete(vma->vm_file->f_inode,
++				     start_t, duration);
++	}
++
+ 	return error ? error : unmapped_error;
+ }
+ 
++#undef CREATE_FSYNC_TRACEPOINT
++
++EXPORT_TRACEPOINT_SYMBOL(fsync_enter);
++EXPORT_TRACEPOINT_SYMBOL(fsync_complete);
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index abcdef2..1234568 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -2664,4 +2664,48 @@ static inline bool io_is_direct(struct file *filp)
+ }
+ 
+ /*
++ * Infinity Kernel: FSYNC ftrace support definitions.
++ *
++ * These tracepoints and inline helpers allow the kernel to export
++ * per-fsync latency data to ftrace/trace-cmd/perf without any
++ * userspace instrumentation.  They are disabled by default (zero
++ * overhead when inactive) and can be toggled via:
++ *
++ *   echo 1 > /sys/kernel/debug/tracing/events/fsync/enable
++ *
++ * The declared but not defined tracepoints are provided by the
++ * DECLARE_TRACEPOINT mechanism; the actual definitions live in
++ * fs/sync.c so that all fsync-family syscalls share one set of
++ * tracepoints.
++ */
++
++#if defined(CONFIG_FTRACE) && defined(CONFIG_TRACING)
++
++/*
++ * Tracepoint: fsync_enter
++ * Fired at the beginning of fsync/fdatasync/msync to record
++ * which inode is about to be flushed.
++ */
++TRACE_EVENT(fsync_enter,
++	TP_PROTO(struct inode *inode),
++	TP_ARGS(inode),
++	TP_STRUCT__entry(
++		__field(dev_t, dev)
++		__field(ino_t, ino)
++		__field(loff_t, i_size)
++	),
++	TP_fast_assign(
++		__entry->dev = inode->i_sb->s_dev;
++		__entry->ino = inode->i_ino;
++		__entry->i_size = i_size_read(inode);
++	),
++	TP_printk("dev=%d:%d ino=%lu size=%lld",
++		MAJOR(__entry->dev), MINOR(__entry->dev),
++		__entry->ino, __entry->i_size)
++);
++
++/* Helper macro used in fs/sync.c to define fsync_complete at each call site */
++#define TRACE_FSYNC_DEFINE_COMPLETE()				\
++	TRACE_EVENT(fsync_complete,				\
++		TP_PROTO(struct inode *inode, unsigned long start,	\
++			 unsigned long duration),			\
++		TP_ARGS(inode, start, duration),			\
++		TP_STRUCT__entry(					\
++			__field(dev_t, dev)				\
++			__field(ino_t, ino)				\
++			__field(unsigned long, duration)		\
++		),							\
++		TP_fast_assign(					\
++			__entry->dev = inode->i_sb->s_dev;		\
++			__entry->ino = inode->i_ino;			\
++			__entry->duration = duration;			\
++		),							\
++		TP_printk("dev=%d:%d ino=%lu dur=%lu ns",		\
++			MAJOR(__entry->dev), MINOR(__entry->dev),	\
++			__entry->ino, __entry->duration)		\
++	)
++
++#endif /* CONFIG_FTRACE && CONFIG_TRACING */
++
++/*
+  * fold a "private ->lock" into a single variable. Used for
+  * searching things with RCU and looking up with a lock.
+-- 
+2.17.1

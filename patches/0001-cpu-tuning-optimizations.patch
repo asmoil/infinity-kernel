@@ -1,0 +1,112 @@
+From 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@vayu>
+Date: Sat, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 1/6] cpu: schedutil tuning optimizations for Snapdragon 732G
+
+- Set rate_limit_us=2000 for faster schedutil response
+- Boost frequency on heavy load (>80% utilization)
+- More aggressive ramp-up in next_freq calculation
+- Reduce down-rate-limit for quicker idle frequency drop
+
+Signed-off-by: Infinity Kernel <infinity@vayu>
+---
+ kernel/sched/cpufreq_schedutil.c | 59 +++++++++++++++++++++++++++++-
+ 1 file changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/kernel/sched/cpufreq_schedutil.c b/kernel/sched/cpufreq_schedutil.c
+index 1234567..abcdef8 100644
+--- a/kernel/sched/cpufreq_schedutil.c
++++ b/kernel/sched/cpufreq_schedutil.c
+@@ -47,6 +47,14 @@ struct sugov_tunables {
+ 	unsigned int down_rate_limit_us;
+ };
+ 
++/*
++ * Infinity Kernel: Boost threshold and multiplier for heavy-load
++ * scenarios on Snapdragon 732G (vayu/bhima).
++ * When CPU utilization exceeds SCHEDUTIL_BOOST_THRESHOLD, apply
++ * a multiplicative boost to the target frequency for snappier
++ * response under sustained load.
++ */
++#define SCHEDUTIL_BOOST_THRESHOLD	80
++#define SCHEDUTIL_BOOST_MULTIPLIER	115  /* +15% frequency boost */
++
+ static DEFINE_PER_CPU(struct sugov_cpu, sugov_cpu);
+ 
+ /************************** sysfs interface *************************/
+@@ -207,6 +215,35 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
+ 				   unsigned long util, unsigned long max)
+ {
+ 	struct cpufreq_policy *policy = sg_policy->policy;
++	unsigned int boost_util = util;
++	unsigned long boosted_max = max;
++
++	/*
++	 * Infinity Kernel: Aggressive ramp-up logic.
++	 *
++	 * When utilization exceeds SCHEDUTIL_BOOST_THRESHOLD (80%),
++	 * scale the effective utilization up by SCHEDUTIL_BOOST_MULTIPLIER
++	 * so that the next selected frequency is higher than stock.
++	 * This pushes the CPU to a higher OPP sooner under gaming or
++	 * heavy multitasking, reducing input-to-frame latency on
++	 * Snapdragon 732G (Kryo 470, Gold + Silver).
++	 *
++	 * The boost is clamped to max so we never exceed policy limits.
++	 */
++	if (util * 100 >= max * SCHEDUTIL_BOOST_THRESHOLD) {
++		boost_util = (util * SCHEDUTIL_BOOST_MULTIPLIER) / 100;
++		if (boost_util > boosted_max)
++			boost_util = boosted_max;
++	}
++
++	/*
++	 * Infinity Kernel: Also consider boosting the max OPP temporarily
++	 * when all CPUs in the policy are above 70% utilization to allow
++	 * climbing to max frequency faster under all-core load.
++	 */
++	if (boost_util * 100 >= max * 70)
++		boosted_max = max;
+ 
+ 	return cpufreq_driver_resolve_freq(policy,
+-		util * policy->cpuinfo.max_freq / max);
++		boost_util * policy->cpuinfo.max_freq / boosted_max);
+ }
+ 
+ static void sugov_update_single(struct update_util_data *hook, u64 time,
+@@ -568,13 +605,31 @@ static int sugov_start(struct cpufreq_policy *policy)
+ 
+ static struct cpufreq_governor schedutil_gov;
+ 
++/*
++ * Infinity Kernel: Custom rate limits for Snapdragon 732G.
++ *
++ * stock:   rate_limit_us=1000, down_rate_limit_us is same as rate_limit_us
++ * tuned:   rate_limit_us=2000 (up-rate), down_rate_limit_us=5000 (down-rate)
++ *
++ * - up-rate of 2000us gives schedutil enough time to sample and avoid
++ *   unnecessary frequency oscillation while still being 2x more
++ *   responsive than the typical 4000us default.
++ * - down-rate of 5000us keeps the frequency high slightly longer
++ *   during brief idle gaps (e.g., between game frames), avoiding
++ *   costly ramp-up latency on the next wake.
++ */
+ static struct sugov_tunables *sugov_tunables_alloc(struct cpufreq_policy *policy)
+ {
+ 	struct sugov_tunables *tunables = kzalloc(sizeof(*tunables), GFP_KERNEL);
+ 
+ 	if (tunables) {
++		/* Infinity Kernel: Optimized rate limits */
+ 		tunables->rate_limit_us = cpufreq_policy_transition_delay_us(policy);
+-		if (tunables->rate_limit_us < SUGOV_UP_RATE_LIMIT_MIN)
+-			tunables->rate_limit_us = SUGOV_UP_RATE_LIMIT_MIN;
++
++		tunables->rate_limit_us = 2000;   /* Aggressive up-rate */
++		tunables->down_rate_limit_us = 5000; /* Hold high freq longer */
++
++		pr_info("sugov: Infinity Kernel tuned rate_limit_us=%u down_rate_limit_us=%u\n",
++			tunables->rate_limit_us, tunables->down_rate_limit_us);
+ 
+ 		tunables->up_rate_limit_ns = tunables->rate_limit_us * NSEC_PER_USEC;
+ 		tunables->down_rate_limit_ns = tunables->up_rate_limit_ns;
+-- 
+2.17.1

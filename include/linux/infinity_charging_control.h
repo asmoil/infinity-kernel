@@ -1,61 +1,123 @@
 /*
- * Infinity Kernel - Charging Control Header
+ * Infinity Charging Bypass Control Driver
+ * Public API Header
+ *
  * Copyright (c) 2024 Infinity Kernel Project
- * Licensed under GNU GPL v2.0
+ * Author: Infinity Kernel Team
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * Target: Linux 4.14.180 | Device: Poco X3 Pro (vayu/bhima)
+ * SoC: Qualcomm Snapdragon 732G (SM7150-AC)
  */
 
-#ifndef __INFINITY_CHARGING_CONTROL_H
-#define __INFINITY_CHARGING_CONTROL_H
+#ifndef _LINUX_INFINITY_CHARGING_CONTROL_H
+#define _LINUX_INFINITY_CHARGING_CONTROL_H
 
-/* Charging states */
-enum infinity_charging_state {
-	CHARGING_STATE_NORMAL  = 0,
-	CHARGING_STATE_BYPASS  = 1,
-	CHARGING_STATE_LIMITED = 2,
-	CHARGING_STATE_COOLING = 3,
+#include <linux/types.h>
+#include <linux/ioctl.h>
+
+/* ------------------------------------------------------------------ */
+/*  Charging Modes                                                     */
+/* ------------------------------------------------------------------ */
+enum charging_mode {
+	CHARGING_MODE_DISABLED  = 0,  /* Bypass disabled, stock charging   */
+	CHARGING_MODE_LIGHT     = 1,  /* Light gaming    - 2500mA limit    */
+	CHARGING_MODE_BALANCED  = 2,  /* Balanced gaming - 2000mA limit    */
+	CHARGING_MODE_EXTREME   = 3,  /* Extreme gaming  - 1500mA limit    */
+	CHARGING_MODE_ULTRA     = 4,  /* Ultra gaming    -  500mA limit    */
+	CHARGING_MODE_MAX       = 5,  /* Sentinel, do not use              */
 };
 
-/* Gaming mode levels */
-enum infinity_gaming_mode {
-	GAMING_MODE_OFF     = 0,
-	GAMING_MODE_LOW     = 1,
-	GAMING_MODE_MEDIUM  = 2,
-	GAMING_MODE_HIGH    = 3,
+/* ------------------------------------------------------------------ */
+/*  IOCTL Magic & Commands                                             */
+/* ------------------------------------------------------------------ */
+#define INFINITY_CHARGE_IOC_MAGIC  'IC'
+
+/* Get current charging mode */
+#define IOC_CHARGE_GET_MODE \
+	_IOR(INFINITY_CHARGE_IOC_MAGIC, 1, int)
+
+/* Set charging mode (arg: enum charging_mode) */
+#define IOC_CHARGE_SET_MODE \
+	_IOW(INFINITY_CHARGE_IOC_MAGIC, 2, int)
+
+/* Enable / disable charging bypass (arg: int 0|1) */
+#define IOC_CHARGE_SET_ENABLED \
+	_IOW(INFINITY_CHARGE_IOC_MAGIC, 3, int)
+
+/* Query whether bypass is enabled (arg: int *) */
+#define IOC_CHARGE_GET_ENABLED \
+	_IOR(INFINITY_CHARGE_IOC_MAGIC, 4, int)
+
+/* Get human-readable status string into user buffer */
+#define IOC_CHARGE_GET_STATUS \
+	_IOR(INFINITY_CHARGE_IOC_MAGIC, 5, char[128])
+
+/* Get current battery temperature in millidegrees C */
+#define IOC_CHARGE_GET_BATT_TEMP \
+	_IOR(INFINITY_CHARGE_IOC_MAGIC, 6, int)
+
+/* Get current battery capacity (percentage 0-100) */
+#define IOC_CHARGE_GET_BATT_CAPACITY \
+	_IOR(INFINITY_CHARGE_IOC_MAGIC, 7, int)
+
+/* ------------------------------------------------------------------ */
+/*  Device Information Struct (exposed via sysfs / ioctl)              */
+/* ------------------------------------------------------------------ */
+struct infinity_charge_info {
+	int mode;           /* Current enum charging_mode        */
+	int enabled;        /* 1 = bypass active, 0 = stock      */
+	int battery_temp;   /* Battery temp in millidegrees C    */
+	int battery_cap;    /* Battery capacity 0-100 %          */
+	int current_limit;  /* Active charge current limit (mA)  */
+	int thermal_state;  /* 0 = normal, 1 = cooldown          */
 };
 
-/* IOCTL commands for char device */
-#define INFINITY_CHARGING_MAGIC  'I'
+/* ------------------------------------------------------------------ */
+/*  Thermal Thresholds (defaults, overridable via DT)                  */
+/* ------------------------------------------------------------------ */
+#define CHARGE_COOLDOWN_TEMP   45000   /* 45 °C  - enter cooldown */
+#define CHARGE_RESUME_TEMP     40000   /* 40 °C  - exit cooldown  */
+#define CHARGE_LOW_BATT_CAP    15      /* 15 %   - auto-resume    */
 
-#define INFINITY_IOCTL_SET_BYPASS       _IOW(INFINITY_CHARGING_MAGIC, 1, int)
-#define INFINITY_IOCTL_SET_GAMING_MODE  _IOW(INFINITY_CHARGING_MAGIC, 2, int)
-#define INFINITY_IOCTL_GET_BYPASS_STATE _IOR(INFINITY_CHARGING_MAGIC, 3, int)
-#define INFINITY_IOCTL_SET_CURRENT      _IOW(INFINITY_CHARGING_MAGIC, 4, int)
-#define INFINITY_IOCTL_GET_STATS        _IOR(INFINITY_CHARGING_MAGIC, 5, \
-					struct infinity_charging_stats)
+/* ------------------------------------------------------------------ */
+/*  Charge Current Limits per Mode (mA)                                */
+/* ------------------------------------------------------------------ */
+#define CHARGE_CURRENT_LIGHT     2500
+#define CHARGE_CURRENT_BALANCED  2000
+#define CHARGE_CURRENT_EXTREME   1500
+#define CHARGE_CURRENT_ULTRA      500
 
-/* Statistics structure */
-struct infinity_charging_stats {
-	int bypass_count;
-	unsigned long total_bypass_time_ms;
-	enum infinity_charging_state state;
-	int charging_enabled;
-	int bypass_active;
-	enum infinity_gaming_mode gaming_mode;
-	int battery_temp_mc;
-	int battery_voltage_uv;
-	int battery_capacity;
-	int current_charge_ma;
-};
+/* ------------------------------------------------------------------ */
+/*  sysfs Attribute Constants                                          */
+/* ------------------------------------------------------------------ */
+#define SYSFS_DIR_NAME  "charging_control"
 
-/* Sysfs paths */
-#define INFINITY_CHARGING_SYSFS_PATH \
-	"/sys/devices/platform/soc/infinity_charging.infinity_charging/infinity_charging"
+/* ------------------------------------------------------------------ */
+/*  Kernel-internal helper (used by other kernel subsystems)          */
+/* ------------------------------------------------------------------ */
+#ifdef __KERNEL__
 
-/* Default configuration */
-#define INFINITY_DEFAULT_MAX_CURRENT_MA      3000
-#define INFINITY_GAMING_CURRENT_MA           500
-#define INFINITY_COOLDOWN_THRESHOLD_MC       45000
-#define INFINITY_RESUME_THRESHOLD_MC         40000
-#define INFINITY_BYPASS_MIN_BATTERY_PERCENT  15
+/**
+ * infinity_charge_get_current_limit() - Return active mA limit.
+ * Returns the configured limit when bypass is enabled and not in
+ * thermal cooldown; otherwise returns 0 (no limit / stock).
+ */
+int infinity_charge_get_current_limit(void);
 
-#endif /* __INFINITY_CHARGING_CONTROL_H */
+/**
+ * infinity_charge_is_enabled() - Check if bypass is currently active.
+ */
+int infinity_charge_is_enabled(void);
+
+/**
+ * infinity_charge_get_mode() - Return current charging_mode enum value.
+ */
+int infinity_charge_get_mode(void);
+
+#endif /* __KERNEL__ */
+
+#endif /* _LINUX_INFINITY_CHARGING_CONTROL_H */
