@@ -249,7 +249,7 @@ jobs:
               HOSTCC=gcc \
               HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error -Wno-deprecated-declarations" \
               HOSTLD=gcc \
-              KCFLAGS="-Wno-error" \
+              KCFLAGS="-Wno-error -fintegrated-as" \
               O=out
           no_output_timeout: 30m
 
