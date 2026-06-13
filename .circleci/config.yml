@@ -221,6 +221,14 @@ jobs:
                 arch/arm64/kernel/vdso/Makefile
               echo "[OK] VDSO Makefile patched for Clang integrated assembler"
             fi
+            # Fix named macro argument syntax in gettimeofday.S.
+            # Clang IAS does not support 'key=value' named arguments in macro calls
+            # (e.g. 'clock_gettime_return, shift=1'). Convert to positional form.
+            if [ -f arch/arm64/kernel/vdso/gettimeofday.S ]; then
+              sed -i 's/clock_gettime_return,[[:space:]]*shift=1/clock_gettime_return 1/g' \
+                arch/arm64/kernel/vdso/gettimeofday.S
+              echo "[OK] gettimeofday.S patched for Clang IAS (positional macro args)"
+            fi
 
       - run:
           name: "Apply source patches and add SUFS config"
