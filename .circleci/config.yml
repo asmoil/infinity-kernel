@@ -212,6 +212,15 @@ jobs:
             # Fix 3: If ENGINE symbols are completely unavailable, provide stubs
             # (OpenSSL 3.0 moved ENGINE to legacy provider)
             echo "Host tools patched for OpenSSL 3.0 compatibility"
+            # Fix 4: Patch VDSO Makefile so assembly (.S) files use Clang's integrated assembler.
+            # The VDSO uses 'a_flags' (KBUILD_AFLAGS) for cmd_vdsoas — KCFLAGS only adds to
+            # KBUILD_CFLAGS, so -fintegrated-as never reaches the VDSO assembly rule.
+            # Patching cmd_vdsoas directly is the only reliable fix for Linux 4.14.
+            if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+              sed -i 's|cmd_vdsoas = $(CC) $(a_flags) -c|cmd_vdsoas = $(CC) $(a_flags) -fintegrated-as -c|' \
+                arch/arm64/kernel/vdso/Makefile
+              echo "[OK] VDSO Makefile patched for Clang integrated assembler"
+            fi
 
       - run:
           name: "Apply source patches and add SUFS config"
