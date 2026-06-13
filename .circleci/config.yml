@@ -13,7 +13,7 @@ jobs:
       CROSS_COMPILE: aarch64-linux-gnu-
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
-      ZIP_NAME: InfinityKernel-v1.0.6-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.7-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -47,8 +47,7 @@ jobs:
                 exit 1
               fi
 
-              # Proton Clang ships llvm-as as 'as' — it lacks -EL flag.
-              # Host tools (scripts/mod, scripts/dtc) need GNU as/ld/ar.
+              # Rename LLVM host tools — host build needs GNU binutils
               for tool in as ar ld nm objcopy objdump ranlib strip; do
                 if [ -f "$PROTON_PATH/bin/$tool" ]; then
                   mv "$PROTON_PATH/bin/$tool" "$PROTON_PATH/bin/$tool.llvm"
@@ -60,16 +59,16 @@ jobs:
             "$PROTON_PATH/bin/clang" --version | head -1
       - run:
           name: Clone Xiaomi kernel source (vayu-r-oss)
+          no_output_timeout: 15m
           command: |
             cd "$PROJECT_DIR"
             git clone --depth=1 -b vayu-r-oss \
               https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
               "$KERNEL_DIR"
-      - run:
-          name: Copy Infinity Kernel defconfig
-          command: |
-            cp "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" \
-               "$KERNEL_DIR/arch/arm64/configs/infinity_defconfig"
+
+            # Show available defconfigs
+            echo "=== Available defconfigs ==="
+            ls arch/arm64/configs/*defconfig 2>/dev/null || echo "No defconfigs found!"
       - run:
           name: Apply kernel patches
           command: |
@@ -79,6 +78,9 @@ jobs:
           command: |
             cd "$KERNEL_DIR"
 
+            cp "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" \
+               arch/arm64/configs/infinity_defconfig
+
             cp -r "$PROJECT_DIR/drivers/charging" drivers/infinity_charging
             cp "$PROJECT_DIR/include/linux/infinity_charging_control.h" include/linux/
             mkdir -p scripts/charging_bypass
@@ -87,8 +89,8 @@ jobs:
             echo 'obj-y += infinity_charging/' >> drivers/Makefile
             echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
       - run:
-          name: Set defconfig and build
-          no_output_timeout: 30m
+          name: Configure and build kernel
+          no_output_timeout: 45m
           command: |
             cd "$KERNEL_DIR"
             export PATH="$PROTON_PATH/bin:$PATH"
@@ -98,89 +100,105 @@ jobs:
             echo "AS: $(which as)"
             echo "LD: $(which ld)"
 
-            # --- Step 1: Generate base .config ---
-            scripts/kconfig/merge_config.sh \
-              arch/arm64/configs/vayu_defconfig \
-              arch/arm64/configs/infinity_defconfig \
-              -O arch/arm64/configs/ \
-              || true
+            # ============================================
+            # Step 1: Find and apply base defconfig
+            # ============================================
+            BASE_DEF=""
+            for candidate in vayu_defconfig vayu-perf_defconfig vayu_user_defconfig; do
+              if [ -f "arch/arm64/configs/${candidate}" ]; then
+                BASE_DEF="$candidate"
+                echo "Found base defconfig: $BASE_DEF"
+                break
+              fi
+            done
 
+            if [ -z "$BASE_DEF" ]; then
+              # Fallback: use first available arm64 defconfig
+              BASE_DEF=$(ls arch/arm64/configs/*defconfig 2>/dev/null | head -1 | xargs basename)
+              echo "WARNING: Using fallback defconfig: $BASE_DEF"
+            fi
+
+            if [ -z "$BASE_DEF" ]; then
+              echo "ERROR: No defconfig found in arch/arm64/configs/"
+              ls -la arch/arm64/configs/
+              exit 1
+            fi
+
+            # Generate base .config from vendor defconfig
+            echo ""
+            echo "=== Applying base defconfig: $BASE_DEF ==="
             make ARCH=$ARCH SUBARCH=$SUBARCH \
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
                  HOSTCC=gcc \
                  O=out \
-                 infinity_defconfig
+                 "$BASE_DEF"
 
-            # --- Step 2: Aggressively disable Clang-incompatible subsystems ---
-            # Using sed directly on .config (more reliable than scripts/config)
+            # ============================================
+            # Step 2: Merge Infinity Kernel fragment on top
+            # ============================================
+            echo ""
+            echo "=== Merging Infinity Kernel fragment ==="
+            scripts/kconfig/merge_config.sh \
+              out/.config \
+              arch/arm64/configs/infinity_defconfig \
+              -O out/ \
+              2>&1 || true
+
+            # ============================================
+            # Step 3: Disable Clang-incompatible subsystems
+            # ============================================
+            echo ""
             echo "=== Disabling Clang-incompatible configs ==="
-            DISABLE_LIST="
-              STAGING
-              MEDIA_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_RC_SUPPORT
-              RC_CORE LIRC VIDEO_DEV
-              V4L_PLATFORM_DRIVERS V4L_MEM2MEM_DRIVERS RADIO_ADAPTERS
-              SOUND SND SND_SOC SND_PCM_CODEC
-              FB FB_EFI FB_TILEBLITTING
-              VT
-              COMEDI
-              AGP
-              INFINIBAND
-              FAULT_INJECTION
-              SAMPLES
-              VHOST VHOST_NET VHOST_SCSI VHOST_VSOCK
-              IIO
-              DRM_LEGACY
-              REGULATOR_USERSPACE_CONSUMER
-            "
-            for cfg in $DISABLE_LIST; do
+
+            # Method 1: sed replace =y/=m with is not set
+            for cfg in STAGING MEDIA_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_RC_SUPPORT \
+              RC_CORE LIRC VIDEO_DEV V4L_PLATFORM_DRIVERS V4L_MEM2MEM_DRIVERS \
+              RADIO_ADAPTERS SOUND SND SND_SOC SND_PCM_CODEC \
+              FB FB_EFI FB_TILEBLITTING VT COMEDI AGP INFINIBAND \
+              FAULT_INJECTION SAMPLES VHOST VHOST_NET VHOST_SCSI VHOST_VSOCK \
+              IIO DRM_LEGACY; do
               sed -i "s/^CONFIG_${cfg}=y/# CONFIG_${cfg} is not set/" out/.config
               sed -i "s/^CONFIG_${cfg}=m/# CONFIG_${cfg} is not set/" out/.config
             done
 
-            # Also disable any CONFIG that references staging/media/sound/fb
-            sed -i '/CONFIG_STAGING=/d' out/.config
-            sed -i '/CONFIG_SOUND=/d' out/.config
-            sed -i '/CONFIG_SND_/d' out/.config
-            sed -i '/CONFIG_MEDIA_/d' out/.config
-            sed -i '/CONFIG_RC_/d' out/.config
-            sed -i '/CONFIG_VIDEO_/d' out/.config
-            sed -i '/CONFIG_V4L_/d' out/.config
-            sed -i '/CONFIG_RADIO_/d' out/.config
-            sed -i '/CONFIG_FB_/d' out/.config
-            sed -i '/CONFIG_VT=/d' out/.config
-            sed -i '/CONFIG_DRM_LEGACY/d' out/.config
-            sed -i '/CONFIG_COMEDI/d' out/.config
-            sed -i '/CONFIG_AGP/d' out/.config
-            sed -i '/CONFIG_INFINIBAND/d' out/.config
-            sed -i '/CONFIG_SAMPLES=/d' out/.config
-            sed -i '/CONFIG_VHOST_/d' out/.config
-            echo "# Clang-clean overrides applied" >> out/.config
+            # Method 2: Delete ALL lines matching these prefixes (catches sub-options)
+            for prefix in CONFIG_STAGING CONFIG_SOUND CONFIG_SND_ CONFIG_MEDIA_ \
+              CONFIG_RC_ CONFIG_VIDEO_ CONFIG_V4L_ CONFIG_RADIO_ CONFIG_FB_ \
+              CONFIG_VT= CONFIG_DRM_LEGACY CONFIG_COMEDI CONFIG_AGP \
+              CONFIG_INFINIBAND CONFIG_SAMPLES= CONFIG_VHOST_; do
+              sed -i "/^${prefix}/d" out/.config
+            done
 
-            # Resolve config dependencies
-            yes "" | make ARCH=$ARCH SUBARCH=$SUBARCH \
+            # Re-resolve dependencies after changes
+            echo ""
+            echo "=== Resolving config dependencies ==="
+            make ARCH=$ARCH SUBARCH=$SUBARCH \
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
                  HOSTCC=gcc \
                  O=out \
-                 olddefconfig 2>&1 | tail -5
+                 olddefconfig
 
+            # ============================================
+            # Step 4: Verify config
+            # ============================================
             echo ""
             echo "=== Config verification ==="
-            echo "STAGING: $(grep CONFIG_STAGING out/.config | head -1)"
-            echo "MEDIA:   $(grep CONFIG_MEDIA_SUPPORT out/.config | head -1)"
-            echo "SOUND:   $(grep CONFIG_SOUND out/.config | head -1)"
-            echo "RC_CORE: $(grep CONFIG_RC_CORE out/.config | head -1)"
-            echo "FB:      $(grep '^CONFIG_FB=' out/.config | head -1)"
-            echo "DRM_MSM: $(grep CONFIG_DRM_MSM out/.config | head -1)"
+            grep CONFIG_STAGING out/.config | head -1 || echo "STAGING: disabled"
+            grep CONFIG_MEDIA_SUPPORT out/.config | head -1 || echo "MEDIA: disabled"
+            grep CONFIG_SOUND out/.config | head -1 || echo "SOUND: disabled"
+            grep CONFIG_RC_CORE out/.config | head -1 || echo "RC_CORE: disabled"
+            grep CONFIG_DRM_MSM out/.config | head -1 || echo "DRM_MSM: not set"
+            grep CONFIG_MSM_KGSL out/.config | head -1 || echo "KGSL: not set"
 
-            # --- Step 3: Build with -Wno-error ---
-            # Clang is stricter than GCC: warnings that GCC ignores become errors
-            # in 4.14 source. -Wno-error prevents this.
+            # ============================================
+            # Step 5: Build
+            # ============================================
             echo ""
-            echo "=== Building kernel ==="
+            echo "=== Building kernel (this takes 15-30 min) ==="
             make -j$(nproc) ARCH=$ARCH SUBARCH=$SUBARCH \
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
@@ -192,20 +210,27 @@ jobs:
 
             echo ""
             echo "=== Error Summary ==="
-            grep -n "error:" build.log | head -40 || echo "No errors found"
-            echo "=== Build result ==="
-            tail -5 build.log
+            ERROR_COUNT=$(grep -c "error:" build.log 2>/dev/null || echo 0)
+            echo "Total errors: $ERROR_COUNT"
+            if [ "$ERROR_COUNT" -gt 0 ]; then
+              echo "---"
+              grep -n "error:" build.log | head -40
+            fi
 
-            # Check for actual kernel image
-            if [ -f out/arch/arm64/boot/Image.gz-dtb ] || \
-               [ -f out/arch/arm64/boot/Image.gz ]; then
-              echo "BUILD SUCCESS"
-              ls -lh out/arch/arm64/boot/Image* 2>/dev/null
+            echo ""
+            echo "=== Checking for kernel image ==="
+            if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+              echo "BUILD SUCCESS — Image.gz-dtb"
+              ls -lh out/arch/arm64/boot/Image.gz-dtb
+            elif [ -f out/arch/arm64/boot/Image.gz ]; then
+              echo "BUILD SUCCESS — Image.gz"
+              ls -lh out/arch/arm64/boot/Image.gz
             elif grep -q "error:" build.log; then
-              echo "BUILD FAILED — see errors above"
+              echo "BUILD FAILED — errors found (see above)"
               exit 1
             else
-              echo "BUILD FAILED — no image produced"
+              echo "BUILD FAILED — no image produced, no errors logged"
+              tail -20 build.log
               exit 1
             fi
       - run:
@@ -234,12 +259,12 @@ jobs:
 
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.6-vayu.zip
-          destination: InfinityKernel-v1.0.6-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.7-vayu.zip
+          destination: InfinityKernel-v1.0.7-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.6-vayu.zip
+            - InfinityKernel-v1.0.7-vayu.zip
 
 workflows:
   build-kernel:
