@@ -4,6 +4,7 @@ jobs:
   build:
     docker:
       - image: ubuntu:22.04
+    working_directory: /home/circleci/project
     environment:
       KERNEL_DIR: /home/circleci/kernel_src
       ARCH: arm64
