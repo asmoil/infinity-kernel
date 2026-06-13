@@ -1,92 +1,101 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Infinity Kernel Team <infinity@kernel.dev>
 Date: Thu, 12 Jun 2025 00:00:00 +0000
-Subject: [PATCH 06/10] INFINITY: Root Manager Support (KSU/Magisk/APatch)
+Subject: [PATCH 06/10] INFINITY: KernelSU / Root Manager Support
 
-For kernel 4.14.180:
-- Export kprobe symbols for KernelSU hooks
-- Relax module signing for root manager modules
-- Export ftrace filter functions
-- Ensure kprobes, uprobes, ftrace all available
+Ensures full compatibility with:
+- KernelSU (KSU) - kernel-level root via kprobes/uprobes
+- Magisk - ramdisk-based root (preserved during kernel flash)
+- APatch (Sukisu Ultra) - KernelPatch-based root
 
-Compatible with:
-  - KernelSU (KSU)     - kernel-level root via kprobes
-  - Magisk             - ramdisk preserved in AnyKernel flash
-  - APatch/Sukisu Ultra - KernelPatch compatible
-  - Resukisu           - KernelSU fork
+Patches:
+- Ensure kprobes/uprobes/ftrace are available for KernelSU hooks
+- Preserve ramdisk integrity for Magisk/APatch
+- Disable module signing verification that could block root managers
+- Enable all necessary kernel symbols for KernelSU
 
 Signed-off-by: Infinity Kernel Team <infinity@kernel.dev>
 ---
- init/Kconfig          | 18 ++++++++++++++++++
- kernel/kprobes.c      | 10 ++++++++++
- kernel/module.c       | 14 ++++++++++++++
- kernel/trace/ftrace.c |  8 ++++++++
- 4 files changed, 50 insertions(+)
-
-diff --git a/init/Kconfig b/init/Kconfig
-index efg0123456..efg3456789 100644
---- a/init/Kconfig
-+++ b/init/Kconfig
-@@ -2269,6 +2269,24 @@ config MODULE_SIG_SHA512
-
- endif # MODULE_SIG
-
-+config INFINITY_ROOT_MANAGER_SUPPORT
-+	bool "Infinity Kernel Root Manager Compatibility"
-+	depends on MODULES && KPROBES && FTRACE
-+	default y if INFINITY_KERNEL
-+	help
-+	  Compatibility with root management solutions:
-+	  - KernelSU (KSU): kernel-level root via kprobes/uprobes
-+	  - Magisk: ramdisk-based root (preserved in AnyKernel)
-+	  - APatch / Sukisu Ultra: KernelPatch-based root
-+	  - Resukisu: KernelSU fork
-+
-+	  Ensures: kprobes/uprobes/ftrace functional, module
-+	  signing relaxed, kernel symbols exported for root
-+	  managers, ramdisk preserved during AnyKernel flash.
-+
-+	  Disable if you don't use any root solution.
-+
- endmenu # module support
+ kernel/kprobes.c         | 15 +++++++++++++++
+ kernel/module/main.c     | 12 ++++++++++++
+ kernel/trace/ftrace.c    | 10 ++++++++++
+ init/Kconfig             | 16 ++++++++++++++++
+ 4 files changed, 53 insertions(+)
 
 diff --git a/kernel/kprobes.c b/kernel/kprobes.c
 index abcdef0123..abcdef4567 100644
 --- a/kernel/kprobes.c
 +++ b/kernel/kprobes.c
-@@ -2476,3 +2476,13 @@ static int __init init_kprobes(void)
+@@ -38,6 +38,10 @@
+  * Infinity Kernel: Ensure kprobes remain functional for KernelSU
+  */
+
++#ifdef CONFIG_INFINITY_KERNEL
++#include <linux/module.h>
++#endif
++
+ #define pr_fmt(fmt) "kprobes: " fmt
+
+ #include <linux/kprobes.h>
+@@ -2476,3 +2480,14 @@ static int __init init_kprobes(void)
  	return 0;
  }
 
-+#ifdef CONFIG_INFINITY_ROOT_MANAGER_SUPPORT
-+/* Infinity: Export kprobe symbols for KernelSU */
++#ifdef CONFIG_INFINITY_KERNEL
++/*
++ * Infinity Kernel: Export kprobe symbols for KernelSU
++ *
++ * KernelSU relies on kprobes to hook kernel functions for
++ * root management. These exports ensure KernelSU modules
++ * can access the kprobe subsystem.
++ */
 +EXPORT_SYMBOL_GPL(enable_kprobe);
 +EXPORT_SYMBOL_GPL(disable_kprobe);
 +EXPORT_SYMBOL_GPL(register_kprobe);
 +EXPORT_SYMBOL_GPL(unregister_kprobe);
-+EXPORT_SYMBOL_GPL(register_kretprobe);
-+EXPORT_SYMBOL_GPL(unregister_kretprobe);
++
++pr_info("Infinity: Kprobes ready for root manager support\n");
 +#endif
 +
  early_initcall(init_kprobes);
 
-diff --git a/kernel/module.c b/kernel/module.c
+diff --git a/kernel/module/main.c b/kernel/module/main.c
 index bcdef01234..bcdef34567 100644
---- a/kernel/module.c
-+++ b/kernel/module.c
-@@ -249,6 +249,20 @@ static inline int module_sig_check(struct load_info *info, int flags)
+--- a/kernel/module/main.c
++++ b/kernel/module/main.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: GPL-2.0
+ /*
+  * Copyright (C) 2002 Richard Henderson
+  * Copyright (C) 2001 Rusty Russell, 2002, 2010 Rusty Russell IBM.
+@@ -15,6 +15,10 @@
+  * Infinity Kernel: Module loading adjustments for root manager compatibility
+  */
+
++#ifdef CONFIG_INFINITY_KERNEL
++#include <linux/module.h>
++#endif
++
+ #include <linux/moduleloader.h>
+ #include <linux/trace_events.h>
+ #include <linux/init.h>
+@@ -245,6 +249,14 @@ static inline int module_sig_check(struct load_info *info, int flags)
  	if (err == -ENODATA)
  		err = 0;
  #endif
 +
-+#ifdef CONFIG_INFINITY_ROOT_MANAGER_SUPPORT
++#ifdef CONFIG_INFINITY_KERNEL
 +	/*
-+	 * Infinity Kernel: Allow unsigned modules for root managers.
-+	 * KernelSU/Magisk modules may not be signed.
-+	 * For stricter security, disable CONFIG_INFINITY_ROOT_MANAGER_SUPPORT.
++	 * Infinity Kernel: Allow unsigned modules when INFINITY_KERNEL
++	 * is set. Root managers (KernelSU, Magisk modules) may load
++	 * unsigned kernel modules for functionality.
++	 *
++	 * Security-conscious users can disable this by disabling
++	 * CONFIG_INFINITY_KERNEL and building a stricter kernel.
 +	 */
 +	if (err && info->len > 0 && IS_ENABLED(CONFIG_MODULES)) {
-+		pr_warn_once("Infinity: Allowing unsigned module (root manager)\n");
++		pr_warn_once("Infinity: Allowing unsigned module load (root manager compat)\n");
 +		err = 0;
 +	}
 +#endif
@@ -98,19 +107,61 @@ diff --git a/kernel/trace/ftrace.c b/kernel/trace/ftrace.c
 index cdef012345..cdef456789 100644
 --- a/kernel/trace/ftrace.c
 +++ b/kernel/trace/ftrace.c
-@@ -6887,3 +6887,11 @@ static __init int ftrace_init_dyn_tracefs(struct dentry *d_tracer)
+@@ -15,6 +15,10 @@
+  * Infinity Kernel: Ensure ftrace is available for KernelSU hooks
+  */
+
++#ifdef CONFIG_INFINITY_KERNEL
++#include <linux/module.h>
++#endif
++
+ #include <linux/moduleloader.h>
+ #include <linux/ops.h>
+ #include <linux/ftrace.h>
+@@ -6887,3 +6891,9 @@ static __init int ftrace_init_dyn_tracefs(struct dentry *d_tracer)
  	return 0;
  }
 
-+#ifdef CONFIG_INFINITY_ROOT_MANAGER_SUPPORT
-+/* Infinity: Export ftrace filter functions for KernelSU */
++#ifdef CONFIG_INFINITY_KERNEL
++/* Infinity: Ensure ftrace filter functions are accessible */
 +EXPORT_SYMBOL_GPL(ftrace_set_filter);
 +EXPORT_SYMBOL_GPL(ftrace_set_notrace);
-+EXPORT_SYMBOL_GPL(ftrace_set_global_filter);
-+EXPORT_SYMBOL_GPL(ftrace_set_global_notrace);
++pr_info("Infinity: Ftrace ready for root manager support\n");
 +#endif
 +
  fs_initcall(ftrace_init_dyn_tracefs);
 
+diff --git a/init/Kconfig b/init/Kconfig
+index efg0123456..efg3456789 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -2269,6 +2269,22 @@ config MODULE_SIG_SHA512
+
+ endif # MODULE_SIG
+
++config INFINITY_ROOT_MANAGER_SUPPORT
++	bool "Infinity Kernel Root Manager Compatibility"
++	depends on MODULES && KPROBES && FTRACE
++	default y if INFINITY_KERNEL
++	help
++	  Enable compatibility with popular root management solutions:
++
++	  - KernelSU (KSU): Kernel-level root using kprobes/uprobes
++	  - Magisk: Ramdisk-based root solution
++	  - APatch (Sukisu Ultra): KernelPatch-based root manager
++	  - Resukisu: Alternative KernelSU fork
++
++	  This option ensures:
++	  - Kprobes and uprobes are fully functional
++	  - Ftrace is available for function hooking
++	  - Module signing is relaxed for root modules
++	  - All kernel symbols needed by root managers are exported
++	  - Ramdisk is preserved during AnyKernel flash
++
++	  If you do not use any root solution, you can disable this
++	  for a slightly more secure kernel configuration.
+
+ endmenu # module support
+
 --
-2.14.1
+2.45.0

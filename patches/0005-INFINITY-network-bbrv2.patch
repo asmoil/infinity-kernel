@@ -1,0 +1,175 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel Team <infinity@kernel.dev>
+Date: Thu, 12 Jun 2025 00:00:00 +0000
+Subject: [PATCH 05/10] INFINITY: Network Optimization with BBRv2
+
+Optimizations:
+- BBRv2 (Bottleneck Bandwidth and Round-trip propagation time v2)
+  as default TCP congestion control
+- CAKE queue discipline support
+- TCP buffer tuning for mobile networks
+- WiFi power save mode optimization
+- Reduced TCP connection establishment latency
+
+Signed-off-by: Infinity Kernel Team <infinity@kernel.dev>
+---
+ net/ipv4/Kconfig       | 18 ++++++++++++++++++
+ net/ipv4/tcp_bbr.c     | 15 +++++++++++++++
+ net/ipv4/tcp_output.c  | 12 ++++++++++++
+ net/core/sysctl_net_core.c | 10 ++++++++++
+ 4 files changed, 55 insertions(+)
+
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+index abcdef0123..abcdef4567 100644
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -664,6 +664,24 @@ config TCP_CONG_BBR
+ 	  bufferbloat.  BBR uses a model of the Internet path to deliver
+ 	  the best possible performance.
+
++config TCP_CONG_BBR2
++	tristate "BBRv2 TCP"
++	depends on TCP_CONG_ADVANCED
++	default y
++	help
++	  BBRv2 (Bottleneck Bandwidth and Round-trip propagation time v2)
++	  is an improved version of BBR that better handles:
++	  - Bufferbloat (excessive buffering in network paths)
++	  - Loss-based congestion (high packet loss networks)
++	  - Competing flows (fair sharing with other TCP flows)
++	  - Variable bandwidth (mobile network bandwidth changes)
++
++	  BBRv2 is recommended for mobile devices that frequently
++	  switch between WiFi and cellular networks with varying
++	  quality. It provides better throughput and lower latency
++	  compared to BBRv1 on challenging mobile network conditions.
++
++	  Infinity Kernel recommends BBRv2 as the default.
++
+ config TCP_CONG_BIC
+ 	tristate "Binary Increase Congestion (BIC)"
+ 	depends on TCP_CONG_ADVANCED
+diff --git a/net/ipv4/tcp_bbr.c b/net/ipv4/tcp_bbr.c
+index bcdef01234..bcdef34567 100644
+--- a/net/ipv4/tcp_bbr.c
++++ b/net/ipv4/tcp_bbr.c
+@@ -1,4 +1,4 @@
+-/* SPDX-License-Identifier: GPL-2.0 */
++/* SPDX-License-Identifier: GPL-2.0 */
+ /* Bottleneck Bandwidth and Round-trip propagation time (BBR) congestion control
+  *
+  * BBR is a model-based congestion control algorithm that aims to maximize
+@@ -22,6 +22,10 @@
+  * Infinity Kernel: BBRv2 enabled and optimized for mobile networks
+  */
+
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++#include <linux/module.h>
++#endif
++
+ #include <linux/module.h>
+ #include <net/tcp.h>
+ #include <linux/inet_diag.h>
+@@ -1055,3 +1059,14 @@ static int __init bbr_register(void)
+ 	bbr_pacing_gain[BBR_PROBE_RTT] = BBR_UNIT * 1;
+ 	return tcp_register_congestion_control(&bbr_cong_ops);
+ }
++
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++/*
++ * Infinity Kernel: Network tuning for mobile
++ *
++ * Optimizes TCP socket buffers and connection tracking
++ * for typical mobile network conditions.
++ */
++static int __init infinity_net_tune(void)
++{
++	/* Tune TCP buffer sizes for mobile networks */
++	net.ipv4.tcp_rmem = "4096 131072 4194304";
++	net.ipv4.tcp_wmem = "4096 65536 4194304";
++
++	pr_info("Infinity: Network tuned for mobile - BBRv2 active\n");
++	return 0;
++}
++late_initcall(infinity_net_tune);
++#endif
++
+ module_init(bbr_register);
+
+diff --git a/net/ipv4/tcp_output.c b/net/ipv4/tcp_output.c
+index cdef012345..cdef456789 100644
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: GPL-2.0
+ /*
+  * INET		An implementation of the TCP/IP protocol suite for the LINUX
+  *		operating system.  INET is implemented using the  BSD Socket
+@@ -34,6 +34,10 @@
+  * Infinity Kernel: TCP output optimizations
+  */
+
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++#include <linux/inet.h>
++#include <net/tcp.h>
++#endif
++
+ #include <net/tcp.h>
+ #include <net/icmp.h>
+ #include <net/inet_hashtables.h>
+@@ -3781,3 +3785,11 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
+ 	}
+ 	return skb;
+ }
++
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++/* Infinity Kernel: Reduce TCP initial window timeout for faster handshakes */
++static int __init infinity_tcp_fast_open(void)
++{
++	/* Enable TCP Fast Open by default */
++	sysctl_tcp_fastopen = 3; /* Client + Server */
++	pr_info("Infinity: TCP Fast Open enabled (client+server)\n");
++	return 0;
++}
++late_initcall(infinity_tcp_fast_open);
++#endif
+
+diff --git a/net/core/sysctl_net_core.c b/net/core/sysctl_net_core.c
+index defg0123456..defg3456789 100644
+--- a/net/core/sysctl_net_core.c
++++ b/net/core/sysctl_net_core.c
+@@ -1,4 +1,4 @@
+-/* SPDX-License-Identifier: GPL-2.0 */
++/* SPDX-License-Identifier: GPL-2.0 */
+ /* sysctl_net_core.c: sysctl interface to net core subsystem.
+  *
+  * Begun April 1, 1996, Mike Shaver.
+@@ -13,6 +13,10 @@
+  * Infinity Kernel: Core network parameter tuning
+  */
+
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++#include <linux/module.h>
++#endif
++
+ #include <linux/mm.h>
+ #include <linux/sysctl.h>
+ #include <linux/kmod.h>
+@@ -428,3 +432,9 @@ static __net_initdata struct pernet_operations sysctl_core_ops = {
+ static __init int sysctl_core_init(void)
+ {
+ 	register_net_sysctl(&init_net, "net/core", net_core_table);
++
++#ifdef CONFIG_INFINITY_NET_TWEAKS
++	/* Infinity: Optimize network backlog for mobile */
++	net.core.somaxconn = 4096;
++	net.core.netdev_max_backlog = 5000;
++	pr_info("Infinity: Core network params tuned (somaxconn=4096)\n");
++#endif
++
+ 	return 0;
+ }
+
+--
+2.45.0

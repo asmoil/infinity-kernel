@@ -57,7 +57,7 @@ jobs:
             fi
 
       - run:
-          name: "Infinity Kernel v1.0.10 - Install dependencies"
+          name: "Infinity Kernel v1.0.12 - Install dependencies"
           command: |
             apt update && apt install -y \
               bc bison build-essential ccache curl flex \
@@ -165,8 +165,8 @@ jobs:
             scripts/kconfig/merge_config.sh -m out/.config \
               arch/arm64/configs/infinity_defconfig \
               || true
-            # Resolve all config dependencies
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            # Resolve all config dependencies (pipe yes to auto-accept NEW configs)
+            yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
               olddefconfig O=out
             echo "Infinity defconfig merged and resolved"
 
@@ -183,8 +183,13 @@ jobs:
               sed -i "/CONFIG_${CFG}=/d" "$CONF"
               echo "# CONFIG_${CFG} is not set" >> "$CONF"
             done
+            # Disable stack protector (Clang 17 doesn't support -fstack-protector-strong on 4.14)
+            sed -i '/CONFIG_CC_STACKPROTECTOR=/d' "$CONF"
+            sed -i '/CONFIG_CC_STACKPROTECTOR_STRONG=/d' "$CONF"
+            echo "# CONFIG_CC_STACKPROTECTOR is not set" >> "$CONF"
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> "$CONF"
             # Re-run olddefconfig to clean up after removal
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
               olddefconfig O=out
             echo "Clang-incompatible subsystems disabled"
 
@@ -209,11 +214,16 @@ jobs:
             echo "Host tools patched for OpenSSL 3.0 compatibility"
 
       - run:
-          name: "Apply source patches"
+          name: "Apply source patches and add SUFS config"
           command: |
             cd /tmp/infinity-kernel-build/kernel_src
             bash patches/apply_all.sh /tmp/infinity-kernel-build/kernel_src
-            echo "Source patches applied"
+            # Now that SUFS Kconfig exists, enable SUFS_FS in .config
+            CONF="out/.config"
+            echo "CONFIG_SUFS_FS=y" >> "$CONF"
+            yes "" | make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+              olddefconfig O=out
+            echo "Source patches applied, SUFS enabled"
 
       - run:
           name: "Build Infinity Kernel"
@@ -268,14 +278,14 @@ jobs:
 
             # Create ZIP
             cd "$AK3"
-            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.10-vayu.zip *
+            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.12-vayu.zip *
             echo ""
             echo "ZIP created:"
-            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.10-vayu.zip
+            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.12-vayu.zip
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.10-vayu.zip
-          destination: Infinity-Kernel-v1.0.10-vayu.zip
+          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.12-vayu.zip
+          destination: Infinity-Kernel-v1.0.12-vayu.zip
 
 workflows:
   infinity_kernel_build:

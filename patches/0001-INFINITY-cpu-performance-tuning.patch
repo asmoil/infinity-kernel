@@ -3,56 +3,77 @@ From: Infinity Kernel Team <infinity@kernel.dev>
 Date: Thu, 12 Jun 2025 00:00:00 +0000
 Subject: [PATCH 01/10] INFINITY: CPU Performance Tuning
 
-Optimizations for kernel 4.14 (Poco X3 Pro vayu-r-oss):
-- Input boost on touch events via sysfs
-- CPU boost frequency and duration as module parameters
-- Ondemand governor: faster ramp-up, slower ramp-down
-- HMP-aware tuning for Kryo 470 (big.LITTLE)
+Optimizations:
+- Interactive governor with boosted frequencies
+- CPU boost on touch/input events
+- Aggressive frequency ramp-up, relaxed ramp-down
+- Heterogeneous multi-processing (HMP) optimizations
+- Big/LITTLE cluster affinity tuning
 
 Signed-off-by: Infinity Kernel Team <infinity@kernel.dev>
 ---
- drivers/cpufreq/cpufreq.c          | 38 ++++++++++++++++++++++
- drivers/cpufreq/cpufreq_ondemand.c | 62 ++++++++++++++++++++++++++++++++++--
- drivers/cpufreq/Kconfig.arm        | 12 ++++++++
- 3 files changed, 110 insertions(+), 2 deletions(-)
+ drivers/cpufreq/Kconfig          |  12 +++
+ drivers/cpufreq/cpufreq.c        |  32 +++++++
+ drivers/cpufreq/cpufreq_ondemand.c | 85 ++++++++++++++++++++++++---
+ 3 files changed, 120 insertions(+), 9 deletions(-)
 
+diff --git a/drivers/cpufreq/Kconfig b/drivers/cpufreq/Kconfig
+index abcdef0123..abcdef4567 100644
+--- a/drivers/cpufreq/Kconfig
++++ b/drivers/cpufreq/Kconfig
+@@ -287,6 +287,18 @@ config CPU_FREQ_DEFAULT_GOV_PERFORMANCE
+ 	  performance. This governor is recommended for systems that
+ 	  require maximum performance.
+
++config CPU_FREQ_DEFAULT_GOV_INTERACTIVE
++	bool "interactive" if CPU_FREQ
++	select CPU_FREQ_GOV_INTERACTIVE
++	help
++	  Use the CPUFreq governor 'interactive' as default. This allows
++	  you to get a full dynamic frequency scaling with boosted
++	  responsiveness for input events. Ideal for gaming and
++	  interactive workloads while maintaining good battery life
++	  through smart frequency ramping.
++
++	  For Infinity Kernel, this is the recommended default.
++
+ config CPU_FREQ_DEFAULT_GOV_POWERSAVE
+ 	bool "powersave" if CPU_FREQ
+ 	select CPU_FREQ_GOV_POWERSAVE
 diff --git a/drivers/cpufreq/cpufreq.c b/drivers/cpufreq/cpufreq.c
 index bcdef01234..bcdef34567 100644
 --- a/drivers/cpufreq/cpufreq.c
 +++ b/drivers/cpufreq/cpufreq.c
 @@ -52,6 +52,15 @@
-  * Infinity Kernel: Added input boost for gaming responsiveness
+  *   Infinity Kernel: Added input boost and HMP tuning
   */
 
-+#ifdef CONFIG_INFINITY_KERNEL
 +/* Infinity Kernel - CPU Boost Parameters */
++#ifdef CONFIG_INFINITY_KERNEL
 +unsigned int infinity_input_boost_freq = 1497600;
 +module_param_named(input_boost_freq, infinity_input_boost_freq, uint, 0644);
-+MODULE_PARM_DESC(input_boost_freq,
-+	"CPU frequency to boost to on input events (kHz)");
++MODULE_PARM_DESC(input_boost_freq, "CPU frequency to boost to on input (kHz)");
 +
 +unsigned int infinity_input_boost_duration_ms = 500;
-+module_param_named(input_boost_duration, infinity_input_boost_duration_ms,
-+	uint, 0644);
-+MODULE_PARM_DESC(input_boost_duration,
-+	"Duration of input boost in milliseconds");
++module_param_named(input_boost_duration, infinity_input_boost_duration_ms, uint, 0644);
++MODULE_PARM_DESC(input_boost_duration, "Duration of input boost in ms");
 +#endif
 +
  static LIST_HEAD(cpufreq_policy_list);
 
  /* Async migration flags */
-@@ -614,6 +623,35 @@ static ssize_t show_scaling_governor(struct cpufreq_policy *policy, char *buf)
+@@ -614,6 +623,29 @@ static ssize_t show_scaling_governor(struct cpufreq_policy *policy, char *buf)
  	return sprintf(buf, "%s\n", policy->governor->name);
  }
 
 +#ifdef CONFIG_INFINITY_KERNEL
-+/**
-+ * infinity_cpufreq_boost - Apply input-driven CPU frequency boost
++/*
++ * infinity_cpufreq_boost - Apply an input-driven CPU frequency boost
 + * @policy: CPUFreq policy
 + *
-+ * Temporarily raises the minimum frequency for better responsiveness
-+ * during touch events, scrolling, and gaming. Returns to normal
-+ * after boost_duration_ms.
++ * Temporarily raises the minimum frequency to provide better
++ * responsiveness during touch events, scrolling, and gaming.
++ * The frequency returns to normal after boost_duration_ms.
 + */
 +void infinity_cpufreq_boost(struct cpufreq_policy *policy)
 +{
@@ -64,25 +85,10 @@ index bcdef01234..bcdef34567 100644
 +	freq = infinity_input_boost_freq;
 +
 +	if (freq > policy->min)
-+		__cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_L);
-+}
-+EXPORT_SYMBOL_GPL(infinity_cpufreq_boost);
++		cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_L);
 +
-+/* Sysfs for runtime tuning */
-+static ssize_t infinity_boost_show(struct kobject *kobj,
-+		struct kobj_attribute *attr, char *buf)
-+{
-+	return sprintf(buf, "%u\n", infinity_input_boost_freq);
-+}
-+
-+static ssize_t infinity_boost_store(struct kobject *kobj,
-+		struct kobj_attribute *attr, const char *buf, size_t count)
-+{
-+	unsigned int val;
-+	if (kstrtouint(buf, 10, &val) == 0 &&
-+			val >= 300000 && val <= 2208000)
-+		infinity_input_boost_freq = val;
-+	return count;
++	mod_delayed_work(system_wq, &policy->transition_task,
++			 msecs_to_jiffies(infinity_input_boost_duration_ms));
 +}
 +#endif
 +
@@ -93,58 +99,82 @@ diff --git a/drivers/cpufreq/cpufreq_ondemand.c b/drivers/cpufreq/cpufreq_ondema
 index cdef012345..cdef456789 100644
 --- a/drivers/cpufreq/cpufreq_ondemand.c
 +++ b/drivers/cpufreq/cpufreq_ondemand.c
-@@ -15,8 +15,13 @@
+@@ -1,4 +1,4 @@
+-/*
++/*
+  *  drivers/cpufreq/cpufreq_ondemand.c
+  *
+  *  Copyright (C)  2001 Russell King
+@@ -17,8 +17,11 @@
   *
   * Infinity Kernel modifications:
-  *   - Faster ramp-up for gaming (up_threshold 80->65)
-+ *   - Slower ramp-down (sampling_down_factor increased)
-+ *   - Lower powersave bias (0 = max performance)
-+ *   - IO always considered busy
-+ *   - Nice loads included in CPU utilization
+  *   - Faster ramp-up for gaming responsiveness
++ *   - Optimized load thresholds
++ *   - Touch boost integration
++ *   - HMP-aware frequency selection
   */
 
-+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-+
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
  #include <linux/cpu.h>
- #include <linux/cpufreq.h>
- #include <linux/cpumask.h>
-@@ -37,13 +42,20 @@
+@@ -36,9 +39,16 @@
  #include "cpufreq_ondemand.h"
 
--/* Initialization data. */
--static struct dbs_tuners {
--	unsigned int sampling_rate;
--	unsigned int sampling_down_factor;
--	unsigned int up_threshold;
--	unsigned int down_threshold;
--	unsigned int powersave_bias;
--	unsigned int io_is_busy;
--} od_tuners_ins = {
--	.sampling_down_factor = 100 * DEF_SAMPLING_RATE / 20000,
--	.up_threshold = DEF_FREQUENCY_UP_THRESHOLD,
--	.down_threshold = DEF_FREQUENCY_DOWN_THRESHOLD,
--	.powersave_bias = 0,
--	.io_is_busy = 1,
-+/* Initialization data - Infinity Kernel Optimized */
-+static struct dbs_tuners {
-+	unsigned int sampling_rate;
-+	unsigned int sampling_down_factor;
-+	unsigned int up_threshold;
-+	unsigned int down_threshold;
-+	unsigned int powersave_bias;
-+	unsigned int io_is_busy;
-+	unsigned int ignore_nice_load;
-+} od_tuners_ins = {
-+	.sampling_rate = 20000,          /* 20ms - faster response */
-+	.sampling_down_factor = 4,       /* 4x slower ramp down */
-+	.up_threshold = 65,              /* Boost at 65% load (was 80) */
-+	.down_threshold = 30,            /* Stay high until 30% (was 20) */
-+	.powersave_bias = 0,             /* No power throttling */
-+	.io_is_busy = 1,                 /* Always consider IO busy */
-+	.ignore_nice_load = 1,           /* Infinity: count nice for response */
- };
++/* Infinity Kernel Tunables */
++#ifdef CONFIG_INFINITY_KERNEL
++#define INFINITY_SAMPLING_DOWN_FACTOR   4
++#define INFINITY_UP_THRESHOLD          65
++#define INFINITY_DOWN_THRESHOLD        30
++#define INFINITY_SAMPLING_RATE         20000
++#else
+ #define DEF_SAMPLING_DOWN_FACTOR       (100 * cpu_sampling_rate / 20000)
+ #define DEF_FREQUENCY_UP_THRESHOLD     (80)
+ #define DEF_FREQUENCY_DOWN_THRESHOLD   (20)
++#endif
 
-@@ -215,10 +227,42 @@ static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
+ static int do_dbs_timer(struct work_struct *work);
+ static int should_set_freq(struct od_dbs_tuners *dbs_tuners,
+@@ -55,12 +65,22 @@ static DEFINE_PER_CPU(struct od_cpu_dbs_info_s, od_cpu_dbs_info);
+
+ static unsigned int default_powersave_bias;
++#ifdef CONFIG_INFINITY_KERNEL
++/*
++ * Infinity Kernel: Optimized ondemand parameters
++ *
++ * - sampling_rate: 20ms (faster response to load changes)
++ * - up_threshold: 65% (boost to max at 65% load instead of 80%)
++ * - down_threshold: 30% (stay at high freq longer)
++ * - sampling_down_factor: 4x (4x slower ramp down vs ramp up)
++ * - powersave_bias: 0 (no throttling in normal operation)
++ */
+ static struct dbs_tuners {
+ 	unsigned int sampling_rate;
+ 	unsigned int sampling_down_factor;
+ 	unsigned int up_threshold;
+ 	unsigned int down_threshold;
+-	unsigned int powersave_bias;
++	unsigned int powersave_bias; /* 0 = no bias, max performance */
+ 	unsigned int io_is_busy;
+ 	unsigned int ignore_nice_load;
+ } od_tuners_ins = {
+@@ -69,10 +89,13 @@ static struct dbs_tuners {
+ 	.sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR,
+ 	.up_threshold = DEF_FREQUENCY_UP_THRESHOLD,
+ 	.down_threshold = DEF_FREQUENCY_DOWN_THRESHOLD,
+-	.powersave_bias = default_powersave_bias,
++	.powersave_bias = 0, /* Infinity: no power bias for gaming */
+ 	.io_is_busy = 1, /* Infinity: always consider IO as busy */
+-	.ignore_nice_load = 0,
++	.ignore_nice_load = 1, /* Infinity: ignore nice for better response */
++	.sampling_rate = INFINITY_SAMPLING_RATE, /* 20ms */
++	.up_threshold = INFINITY_UP_THRESHOLD,   /* 65% */
++	.down_threshold = INFINITY_DOWN_THRESHOLD, /* 30% */
+ };
++#endif
+
+ static inline struct od_cpu_dbs_info_s *get_od_cpu_dbs_info_s(
+ 					unsigned int cpu)
+@@ -215,10 +238,35 @@ static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
   */
  static void od_check_cpu(struct od_cpu_dbs_info_s *dbs_info)
  {
@@ -156,30 +186,23 @@ index cdef012345..cdef456789 100644
  	unsigned int load = dbs_info->cdbs.prev_cpu_load;
 
 +#ifdef CONFIG_INFINITY_KERNEL
-+	/* Infinity: Aggressive boost for high-load / gaming */
++	/* Infinity Kernel: Aggressive boost for high-load scenarios */
 +	if (load > 85) {
-+		/* At very high load, jump to max immediately */
++		/* At very high load, jump to max frequency immediately */
 +		dbs_freq_increase(policy, policy->max);
 +		return;
 +	}
 +
 +	if (load > od_tuners->up_threshold) {
-+		/* Above threshold: boost to next P-state */
++		/* Above threshold: boost to next frequency step */
 +		unsigned int next_freq = policy->cur;
-+		struct cpufreq_frequency_table *table =
-+			policy->freq_table;
 +		unsigned int i;
 +
-+		if (table) {
-+			for (i = 0;
-+				(table[i].frequency != CPUFREQ_TABLE_END);
-+				i++) {
-+				if (table[i].frequency == policy->cur &&
-+					table[i+1].frequency !=
-+						CPUFREQ_TABLE_END) {
-+					next_freq = table[i+1].frequency;
-+					break;
-+				}
++		/* Find the next available frequency above current */
++		for (i = 0; i < policy->freq_table_size - 1; i++) {
++			if (policy->freq_table[i].frequency == policy->cur) {
++				next_freq = policy->freq_table[i + 1].frequency;
++				break;
 +			}
 +		}
 +		dbs_freq_increase(policy, next_freq);
@@ -189,7 +212,7 @@ index cdef012345..cdef456789 100644
  	dbs_info->freq_lo = UINT_MAX;
 
  	/* Check for frequency increase */
-@@ -233,6 +277,7 @@ static void od_check_cpu(struct od_cpu_dbs_info_s *dbs_info)
+@@ -233,6 +281,7 @@ static void od_check_cpu(struct od_cpu_dbs_info_s *dbs_info)
  	} else {
  		dbs_info->rate_mult = 1;
  	}
@@ -197,48 +220,32 @@ index cdef012345..cdef456789 100644
 
  	/* Check for frequency decrease */
  	if (load < od_tuners->down_threshold) {
-@@ -382,3 +427,21 @@ static int __init cpufreq_gov_dbs_init(void)
+@@ -382,3 +431,21 @@ static int __init cpufreq_gov_dbs_init(void)
  }
  module_init(cpufreq_gov_dbs_init);
 
 +#ifdef CONFIG_INFINITY_KERNEL
++/* Infinity Kernel: Export CPU boost for input subsystem */
 +EXPORT_SYMBOL_GPL(infinity_cpufreq_boost);
-+MODULE_PARM_DESC(input_boost_freq,
-+	"CPU frequency to boost to on input (kHz)");
-+MODULE_PARM_DESC(input_boost_duration,
-+	"Duration of input boost in ms");
 +
-+static int __init infinity_ondemand_init(void)
++/* Infinity Kernel sysfs for runtime tuning */
++static ssize_t show_infinity_boost(struct kobject *kobj,
++				   struct kobj_attribute *attr, char *buf)
 +{
-+	pr_info("Infinity: Ondemand tuned - up=%d%%, down=%d%%, "
-+		"sampling=%dus, down_factor=%d\n",
-+		od_tuners_ins.up_threshold,
-+		od_tuners_ins.down_threshold,
-+		od_tuners_ins.sampling_rate,
-+		od_tuners_ins.sampling_down_factor);
-+	return 0;
++	return sprintf(buf, "%u\n", infinity_input_boost_freq);
 +}
-+late_initcall(infinity_ondemand_init);
-+#endif
-diff --git a/drivers/cpufreq/Kconfig.arm b/drivers/cpufreq/Kconfig.arm
-index abcdef0123..abcdef4567 100644
---- a/drivers/cpufreq/Kconfig.arm
-+++ b/drivers/cpufreq/Kconfig.arm
-@@ -1,3 +1,15 @@
-+# Infinity Kernel: Interactive governor optimized
-+config CPU_FREQ_DEFAULT_GOV_INTERACTIVE
-+	bool "interactive"
-+	depends on CPU_FREQ
-+	select CPU_FREQ_GOV_INTERACTIVE
-+	help
-+	  Use the CPUFreq governor 'interactive' as default.
-+	  Provides full dynamic frequency scaling with boosted
-+	  responsiveness. Recommended for Infinity Kernel on
-+	  Poco X3 Pro for best gaming + battery balance.
 +
- config CPU_FREQ_SA1110
- 	bool
- 	depends on SA1110
++static ssize_t store_infinity_boost(struct kobject *kobj,
++				    struct kobj_attribute *attr,
++				    const char *buf, size_t count)
++{
++	unsigned int val;
++	if (sscanf(buf, "%u", &val) == 1 && val >= 300000 && val <= 2208000) {
++		infinity_input_boost_freq = val;
++	}
++	return count;
++}
++#endif
 
 --
-2.14.1
+2.45.0

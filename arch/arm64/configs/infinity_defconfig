@@ -33,14 +33,14 @@ CONFIG_CMA_SIZE_MBYTES=256
 CONFIG_MEMORY_ISOLATION=y
 
 #
-# Filesystems & SUFS
+# Filesystems
 #
 CONFIG_FUSE_FS=y
 CONFIG_OVERLAY_FS=y
 CONFIG_SQUASHFS=y
 CONFIG_SQUASHFS_DECOMP_SINGLE=y
-CONFIG_SUFS_FS=y
 CONFIG_FHANDLE=y
+# SUFS_FS is added via sed after apply_all.sh (Kconfig doesn't exist at merge time)
 
 #
 # Networking / TCP
@@ -160,6 +160,13 @@ CONFIG_KALLSYMS_ALL=y
 # CONFIG_INFINIBAND is not set
 # CONFIG_FAULT_INJECTION is not set
 # CONFIG_SAMPLES is not set
+
+#
+# Clang 17 compatibility
+#
+# CONFIG_CC_STACKPROTECTOR is not set
+# CONFIG_CC_STACKPROTECTOR_STRONG is not set
+# CONFIG_CC_STACKPROTECTOR_NONE is not set
 
 #
 # Other Optimizations

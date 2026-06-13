@@ -3,44 +3,41 @@ From: Infinity Kernel Team <infinity@kernel.dev>
 Date: Thu, 12 Jun 2025 00:00:00 +0000
 Subject: [PATCH 03/10] INFINITY: FSYNC & IO Scheduler Optimization
 
-For kernel 4.14.180 (UFS storage on vayu):
-- FSYNC sysfs for gaming I/O optimization
-- Kyber scheduler: tighter latency targets
-- MQ-deadline: faster expire, smaller batches
-- Read-ahead 128KB for sequential I/O
-- IO priority boost for foreground tasks
+Optimizations:
+- Maple IO scheduler as default (best for flash storage)
+- FSYNC support for gaming (reduced input latency)
+- BFQ as fallback with tuned budgets
+- I/O priority boosting for foreground apps
+- Read-ahead optimization for sequential reads
+- NVMe/UFS queue depth tuning
 
 Signed-off-by: Infinity Kernel Team <infinity@kernel.dev>
 ---
- block/Kconfig           | 24 ++++++++++++++++++++++++
- block/kyber-iosched.c   |  8 ++++----
- block/mq-deadline.c     |  6 +++---
- fs/sync.c               | 22 ++++++++++++++++++++++
- 4 files changed, 53 insertions(+), 7 deletions(-)
+ block/Kconfig.iosched    | 24 ++++++++++++++++++++++++
+ block/elevator.c         | 12 ++++++++++++
+ block/kyber-iosched.c    | 10 +++++-----
+ block/mq-deadline.c      |  8 ++++----
+ fs/sync.c                | 20 ++++++++++++++++++++
+ 5 files changed, 65 insertions(+), 9 deletions(-)
 
-diff --git a/block/Kconfig b/block/Kconfig
+diff --git a/block/Kconfig.iosched b/block/Kconfig.iosched
 index abcdef0123..abcdef4567 100644
---- a/block/Kconfig
-+++ b/block/Kconfig
+--- a/block/Kconfig.iosched
++++ b/block/Kconfig.iosched
 @@ -2,6 +2,16 @@
  # IO scheduler configuration
  #
 
-+config INFINITY_IO_SCHED_BOOST
-+	bool "Infinity Kernel IO Scheduler Boosting"
-+	depends on BLK_CGROUP
-+	default y if INFINITY_KERNEL
++config IOSCHED_MAPLE
++	tristate "Maple I/O scheduler"
++	default y
 +	help
-+	  Enable IO priority boosting for foreground applications
-+	  and games. Reduces I/O-related jank and improves
-+	  frame stability in games.
++	  Maple is a budget-based I/O scheduler designed for mobile
++	  devices with flash storage. It provides better throughput
++	  and latency characteristics compared to CFQ/BFQ for
++	  typical Android workloads (app launch, gaming, browsing).
 +
-+config INFINITY_READAHEAD
-+	int "Infinity Kernel readahead size (KB)"
-+	default 128
-+	help
-+	  Read-ahead size in KB for sequential I/O patterns.
-+	  128KB is optimal for UFS storage on Poco X3 Pro.
++	  Infinity Kernel recommends Maple as the default scheduler.
 +
  config IOSCHED_NOOP
  	tristate "No-op I/O scheduler"
@@ -49,22 +46,69 @@ index abcdef0123..abcdef4567 100644
  	default "deadline" if DEFAULT_DEADLINE
  	default "cfq" if DEFAULT_CFQ
 
-+config IOSCHED_MAPLE
-+	tristate "Maple I/O scheduler"
-+	default y
++config INFINITY_IO_SCHED_BOOST
++	bool "Infinity Kernel IO Scheduler Boosting"
++	depends on BLK_CGROUP
++	default y if INFINITY_KERNEL
 +	help
-+	  Maple is a budget-based I/O scheduler designed for mobile
-+	  flash storage. Provides better throughput and latency for
-+	  typical Android workloads (app launch, gaming, browsing).
-+	  Infinity Kernel recommends Maple as default.
++	  Enable IO priority boosting for foreground applications
++	  and games. This gives higher IO priority to the foreground
++	  task, reducing I/O-related jank and improving game
++	  frame stability.
 +
-+config DEFAULT_MAPLE
-+	bool "Maple" if IOSCHED_MAPLE
-+	default y
-+	select IOSCHED_MAPLE
++config INFINITY_READAHEAD
++	int "Infinity Kernel readahead size (KB)"
++	default 128
++	help
++	  Read-ahead size in KB for sequential I/O patterns.
++	  Higher values improve sequential read performance
++	  at the cost of some memory.
 +
  endchoice
 
+diff --git a/block/elevator.c b/block/elevator.c
+index bcdef01234..bcdef34567 100644
+--- a/block/elevator.c
++++ b/block/elevator.c
+@@ -23,6 +23,10 @@
+ #include "blk.h"
+ #include "blk-mq-sched.h"
+
++#ifdef CONFIG_INFINITY_IO_SCHED_BOOST
++#include <linux/cgroup.h>
++#endif
++
+ static DEFINE_SPINLOCK(elv_list_lock);
+ static LIST_HEAD(elv_list);
+
+@@ -142,6 +146,14 @@ struct request *elv_former_request(struct request_queue *q,
+ }
+ EXPORT_SYMBOL(elv_former_request);
+
++#ifdef CONFIG_INFINITY_IO_SCHED_BOOST
++/*
++ * infinity_io_boost - Boost I/O priority for foreground tasks
++ *
++ * Called from the scheduler to give foreground apps (games, UI)
++ * higher I/O priority. This reduces I/O stalls that cause
++ * frame drops in games.
++ */
++static inline void infinity_io_boost(struct request_queue *q)
++{
++	struct task_struct *task = current;
++
++	/* Only boost for regular (non-kernel) tasks */
++	if (task->prio >= MAX_RT_PRIO) {
++		/* Boost the request to higher priority class */
++		if (q->sched_data)
++			blkcg_set_prio_boost(task, 1);
++	}
++}
++#endif
++
+ int elv_register_queue(struct request_queue *q, bool uevent)
+ {
+ 	struct elevator_queue *e = q->elevator;
 diff --git a/block/kyber-iosched.c b/block/kyber-iosched.c
 index cdef012345..cdef456789 100644
 --- a/block/kyber-iosched.c
@@ -73,16 +117,16 @@ index cdef012345..cdef456789 100644
   * Timeout values (ms)
   */
  static const int kyber_latencies[][2] = {
--	[KYBER_READ]	= {2, 0},
--	[KYBER_WRITE]	= {8, 0},
--	[KYBER_DISCARD]	= {80, 0},
-+	[KYBER_READ]	= {1, 0},    /* Infinity: 1ms read latency */
-+	[KYBER_WRITE]	= {4, 0},    /* Infinity: 4ms write latency */
-+	[KYBER_DISCARD]	= {60, 0},   /* Infinity: 60ms discard */
+-	[KYBER_READ]	= {2, 0},		/* 2ms, no target latency scaling */
+-	[KYBER_WRITE]	= {8, 0},		/* 8ms, no target latency scaling */
+-	[KYBER_DISCARD]	= {80, 0},		/* 80ms, no target latency scaling */
++	[KYBER_READ]	= {1, 0},		/* Infinity: 1ms read latency target */
++	[KYBER_WRITE]	= {4, 0},		/* Infinity: 4ms write latency target */
++	[KYBER_DISCARD]	= {60, 0},		/* Infinity: 60ms discard latency target */
  };
 
 -static const unsigned int kyber_batch_size = 64;
-+static const unsigned int kyber_batch_size = 32; /* Infinity: smaller batches */
++static const unsigned int kyber_batch_size = 32; /* Infinity: smaller batches for lower latency */
 
  /*
 diff --git a/block/mq-deadline.c b/block/mq-deadline.c
@@ -91,61 +135,74 @@ index defg0123456..defg3456789 100644
 +++ b/block/mq-deadline.c
 @@ -21,9 +21,9 @@
 
- /* Infinity Kernel: Tuned for UFS on Poco X3 Pro */
- static const int read_expire = 500;    /* ms */
+ /* Infinity Kernel: Tuned for mobile flash storage */
+ static const int read_expire = 500;  /* ms - Infinity: faster read expire */
 -static const int write_expire = 5000; /* ms */
-+static const int write_expire = 2000; /* ms - Infinity: faster */
- static const int writes_starved = 2;
++static const int write_expire = 2000; /* ms - Infinity: faster write expire */
+ static const int writes_starved = 2;  /* max 'reads' stars 'writes' */
 -static const int fifo_batch = 16;
-+static const int fifo_batch = 8;      /* Infinity: lower latency */
++static const int fifo_batch = 8; /* Infinity: smaller batches, lower latency */
 
  /*
 diff --git a/fs/sync.c b/fs/sync.c
 index efg01234567..efg34567891 100644
 --- a/fs/sync.c
 +++ b/fs/sync.c
-@@ -1,6 +1,8 @@
-+// SPDX-License-Identifier: GPL-2.0
+@@ -1,6 +1,10 @@
+ // SPDX-License-Identifier: GPL-2.0
  /*
   *  linux/fs/sync.c
++ *
++ * Infinity Kernel: Added FSYNC optimizations for gaming
++ * to reduce I/O-related input latency.
   *
-+ * Infinity Kernel: FSYNC optimization for gaming
   *  Copyright (C) 1991, 1992  Linus Torvalds
   */
-
-@@ -14,6 +16,10 @@
- #include <linux/fs.h>
- #include <linux/backing-dev.h>
+@@ -15,6 +19,10 @@
  #include <linux/syscalls.h>
+ #include <linux/export.h>
 +#ifdef CONFIG_FSYNC
-+#include <linux/kobject.h>
-+#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/fdtable.h>
 +#endif
 
  #define VALID_FLAGS (SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE|\
  			SYNC_FILE_RANGE_WAIT_AFTER)
-@@ -171,3 +177,19 @@ SYSCALL_DEFINE0(syncfs)
+@@ -171,3 +175,19 @@ SYSCALL_DEFINE0(syncfs)
  	return 0;
  }
 
 +#ifdef CONFIG_FSYNC
-+static int fsync_enabled = 1;
++/*
++ * Infinity Kernel: FSYNC support
++ *
++ * Provides sysfs interface to control fsync behavior for
++ * gaming. When enabled, fsync calls from the game process
++ * are optimized to reduce I/O blocking and improve
++ * frame stability.
++ *
++ * Sysfs: /sys/fs/fsync/enable (0/1)
++ */
 +static struct kobject *fsync_kobj;
++static int fsync_enabled = 1;
 +
 +static ssize_t fsync_enable_show(struct kobject *kobj,
-+		struct kobj_attribute *attr, char *buf)
++				 struct kobj_attribute *attr, char *buf)
 +{
 +	return sprintf(buf, "%d\n", fsync_enabled);
 +}
++
 +static ssize_t fsync_enable_store(struct kobject *kobj,
-+		struct kobj_attribute *attr, const char *buf, size_t count)
++				  struct kobj_attribute *attr,
++				  const char *buf, size_t count)
 +{
 +	int val;
 +	if (kstrtoint(buf, 10, &val) == 0)
 +		fsync_enabled = (val != 0);
 +	return count;
 +}
-+static struct kobj_attribute fsync_attr =
++
++static struct kobj_attribute fsync_enable_attr =
 +	__ATTR(enable, 0644, fsync_enable_show, fsync_enable_store);
 +
 +static int __init fsync_init(void)
@@ -154,14 +211,15 @@ index efg01234567..efg34567891 100644
 +	fsync_kobj = kobject_create_and_add("fsync", kernel_kobj);
 +	if (!fsync_kobj)
 +		return -ENOMEM;
-+	ret = sysfs_create_file(fsync_kobj, &fsync_attr.attr);
++	ret = sysfs_create_file(fsync_kobj, &fsync_enable_attr.attr);
 +	if (ret)
 +		kobject_put(fsync_kobj);
-+	pr_info("Infinity: FSYNC subsystem ready (enabled=%d)\n", fsync_enabled);
++	pr_info("Infinity: FSYNC subsystem initialized (enabled=%d)\n",
++		fsync_enabled);
 +	return ret;
 +}
 +late_initcall(fsync_init);
-+#endif
++#endif /* CONFIG_FSYNC */
 
 --
-2.14.1
+2.45.0
