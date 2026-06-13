@@ -1,5 +1,5 @@
 #!/bin/bash
-## apply_all.sh — Infinity Kernel v1.0.7
+## apply_all.sh — Infinity Kernel v1.0.8
 ## Applies all optimizations via sed/grep/echo on Linux 4.14 (vayu-r-oss).
 ## All operations are safe: file existence is checked, missing patterns are OK.
 ## Usage: bash apply_all.sh <kernel_src_dir>
@@ -10,7 +10,7 @@ if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
     exit 1
 fi
 
-echo "=== Applying Infinity Kernel v1.0.7 patches ==="
+echo "=== Applying Infinity Kernel v1.0.8 patches ==="
 
 ###############################################
 # Helper: safe_sed <file> <pattern> <replacement>
@@ -521,4 +521,4 @@ fi
 
 echo "  SUFS: done"
 
-echo "=== All Infinity Kernel v1.0.7 patches applied successfully ==="
+echo "=== All Infinity Kernel v1.0.8 patches applied successfully ==="

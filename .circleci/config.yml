@@ -7,8 +7,57 @@ jobs:
     resource_class: large
     working_directory: /tmp/infinity-kernel-build
     steps:
+      - checkout
+
       - run:
-          name: "Infinity Kernel v1.0.7 - Install dependencies"
+          name: "Detect project structure after checkout"
+          command: |
+            echo "=== Working directory contents ==="
+            ls -la /tmp/infinity-kernel-build/
+            echo ""
+            echo "=== Searching for infinity_defconfig ==="
+            find /tmp/infinity-kernel-build/ -name "infinity_defconfig" -type f 2>/dev/null
+            echo ""
+            echo "=== Searching for apply_all.sh ==="
+            find /tmp/infinity-kernel-build/ -name "apply_all.sh" -type f 2>/dev/null
+            echo ""
+            echo "=== Searching for infinity_charging_control.c ==="
+            find /tmp/infinity-kernel-build/ -name "infinity_charging_control.c" -type f 2>/dev/null
+            echo ""
+            echo "=== Searching for anykernel.sh ==="
+            find /tmp/infinity-kernel-build/ -name "anykernel.sh" -type f 2>/dev/null
+            echo ""
+
+      - run:
+          name: "Set SRC_ROOT variable"
+          command: |
+            # Auto-detect where our project files are located
+            # Case 1: files at repo root (e.g. /tmp/infinity-kernel-build/arch/...)
+            # Case 2: files in subdirectory (e.g. /tmp/infinity-kernel-build/infinity-kernel/arch/...)
+            if [ -f /tmp/infinity-kernel-build/arch/arm64/configs/infinity_defconfig ]; then
+              echo "SRC_ROOT=/tmp/infinity-kernel-build" >> $BASH_ENV
+              echo "Detected: files at repo root"
+            elif [ -f /tmp/infinity-kernel-build/infinity-kernel/arch/arm64/configs/infinity_defconfig ]; then
+              echo "SRC_ROOT=/tmp/infinity-kernel-build/infinity-kernel" >> $BASH_ENV
+              echo "Detected: files in infinity-kernel/ subdirectory"
+            else
+              # Search recursively
+              FOUND=$(find /tmp/infinity-kernel-build/ -name "infinity_defconfig" -type f 2>/dev/null | head -1)
+              if [ -n "$FOUND" ]; then
+                DIR=$(dirname "$FOUND")
+                ROOT=$(echo "$DIR" | sed 's|/arch/arm64/configs||')
+                echo "SRC_ROOT=$ROOT" >> $BASH_ENV
+                echo "Detected: files at $ROOT"
+              else
+                echo "ERROR: Cannot find infinity_defconfig anywhere!"
+                echo "Make sure ALL files from the archive are pushed to GitHub."
+                echo "Your repo must contain: arch/, drivers/, patches/, include/, scripts/, AnyKernel3/"
+                exit 1
+              fi
+            fi
+
+      - run:
+          name: "Infinity Kernel v1.0.8 - Install dependencies"
           command: |
             apt update && apt install -y \
               bc bison build-essential ccache curl flex \
@@ -27,50 +76,82 @@ jobs:
       - run:
           name: "Fix Proton Clang host tools (LLVM as != GNU as)"
           command: |
-            cd proton-clang/bin
+            cd /tmp/infinity-kernel-build/proton-clang/bin
             for tool in as nm ar ranlib objcopy objdump strip; do
               if [ -f "$tool" ]; then
                 mv "$tool" "${tool}.llvm"
+                echo "Renamed: $tool -> ${tool}.llvm"
               fi
             done
-            ls -la *.llvm 2>/dev/null || echo "Host tools renamed"
-            # Verify no conflicting GNU-as remains
-            ! command -v ./as 2>/dev/null || echo "WARNING: as still exists"
+            echo "Host tools fix complete"
 
       - run:
           name: "Clone Xiaomi kernel source (vayu-r-oss)"
           command: |
             git clone --depth=1 -b vayu-r-oss \
-              https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel_src
+              https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git /tmp/infinity-kernel-build/kernel_src
 
       - run:
-          name: "Copy Infinity Kernel patches and configs"
+          name: "Copy Infinity Kernel source files into kernel tree"
           command: |
-            # Copy defconfig fragment
-            mkdir -p kernel_src/arch/arm64/configs
-            cp -f arch/arm64/configs/infinity_defconfig kernel_src/arch/arm64/configs/
-            # Copy charging driver
-            mkdir -p kernel_src/drivers/charging
-            cp -f drivers/charging/infinity_charging_control.c kernel_src/drivers/charging/
-            cp -f drivers/charging/Kconfig kernel_src/drivers/charging/
-            cp -f drivers/charging/Makefile kernel_src/drivers/charging/
-            # Copy header
-            mkdir -p kernel_src/include/linux
-            cp -f include/linux/infinity_charging_control.h kernel_src/include/linux/
-            # Copy DTS
-            mkdir -p kernel_src/scripts/charging_bypass
-            cp -f scripts/charging_bypass/infinity_charging.dts kernel_src/scripts/charging_bypass/
-            # Copy patch script
-            mkdir -p kernel_src/patches
-            cp -f patches/apply_all.sh kernel_src/patches/
-            echo "Source files copied"
+            echo "Using SRC_ROOT=$SRC_ROOT"
+            echo ""
+            # Verify source root
+            ls -la "$SRC_ROOT/arch/arm64/configs/infinity_defconfig"
+            ls -la "$SRC_ROOT/drivers/charging/infinity_charging_control.c"
+            ls -la "$SRC_ROOT/patches/apply_all.sh"
+            echo ""
+
+            KSRC="/tmp/infinity-kernel-build/kernel_src"
+
+            # 1. Defconfig fragment
+            mkdir -p "$KSRC/arch/arm64/configs"
+            cp -f "$SRC_ROOT/arch/arm64/configs/infinity_defconfig" "$KSRC/arch/arm64/configs/"
+            echo "[OK] infinity_defconfig copied"
+
+            # 2. Charging driver
+            mkdir -p "$KSRC/drivers/charging"
+            cp -f "$SRC_ROOT/drivers/charging/infinity_charging_control.c" "$KSRC/drivers/charging/"
+            cp -f "$SRC_ROOT/drivers/charging/Kconfig" "$KSRC/drivers/charging/"
+            cp -f "$SRC_ROOT/drivers/charging/Makefile" "$KSRC/drivers/charging/"
+            echo "[OK] Charging driver copied"
+
+            # 3. Charging driver header
+            mkdir -p "$KSRC/include/linux"
+            cp -f "$SRC_ROOT/include/linux/infinity_charging_control.h" "$KSRC/include/linux/"
+            echo "[OK] Header copied"
+
+            # 4. DTS overlay
+            mkdir -p "$KSRC/scripts/charging_bypass"
+            cp -f "$SRC_ROOT/scripts/charging_bypass/infinity_charging.dts" "$KSRC/scripts/charging_bypass/"
+            echo "[OK] DTS copied"
+
+            # 5. Patch script
+            mkdir -p "$KSRC/patches"
+            cp -f "$SRC_ROOT/patches/apply_all.sh" "$KSRC/patches/"
+            echo "[OK] Patch script copied"
+
+            # 6. Register charging driver in kernel build system
+            if ! grep -q 'infinity_charging' "$KSRC/drivers/Makefile" 2>/dev/null; then
+              echo 'obj-y += charging/' >> "$KSRC/drivers/Makefile"
+              echo "[OK] Added obj-y += charging/ to drivers/Makefile"
+            fi
+            if ! grep -q 'infinity_charging' "$KSRC/drivers/Kconfig" 2>/dev/null; then
+              echo 'source "drivers/charging/Kconfig"' >> "$KSRC/drivers/Kconfig"
+              echo "[OK] Added source to drivers/Kconfig"
+            fi
+
+            echo ""
+            echo "=== All source files integrated ==="
 
       - run:
           name: "Generate base config (vayu_user_defconfig)"
           command: |
             cd /tmp/infinity-kernel-build/kernel_src
-            # Verify the defconfig exists
-            ls -la arch/arm64/configs/vayu_user_defconfig
+            # List available defconfigs to confirm
+            echo "Available vayu defconfigs:"
+            ls -la arch/arm64/configs/vayu*
+            echo ""
             # Generate .config from the REAL device defconfig
             make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
               vayu_user_defconfig O=out
@@ -84,54 +165,25 @@ jobs:
             scripts/kconfig/merge_config.sh -m out/.config \
               arch/arm64/configs/infinity_defconfig \
               || true
-            # Copy merged config back for make to use
+            # Resolve all config dependencies
             make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
               olddefconfig O=out
-            echo "Infinity defconfig merged"
+            echo "Infinity defconfig merged and resolved"
 
       - run:
           name: "Disable Clang-incompatible subsystems"
           command: |
             cd /tmp/infinity-kernel-build/kernel_src
             CONF="out/.config"
-            # Remove configs for subsystems that don't compile with Clang 17 on 4.14
-            sed -i '/CONFIG_STAGING=/d' "$CONF"
-            sed -i '/CONFIG_SND=/d' "$CONF"
-            sed -i '/CONFIG_SOUND=/d' "$CONF"
-            sed -i '/CONFIG_RC_CORE=/d' "$CONF"
-            sed -i '/CONFIG_MEDIA_RC_SUPPORT=/d' "$CONF"
-            sed -i '/CONFIG_LIRC=/d' "$CONF"
-            sed -i '/CONFIG_V4L_PLATFORM_DRIVERS=/d' "$CONF"
-            sed -i '/CONFIG_V4L_MEM2MEM_DRIVERS=/d' "$CONF"
-            sed -i '/CONFIG_RADIO_ADAPTERS=/d' "$CONF"
-            sed -i '/CONFIG_VIDEO_DEV=/d' "$CONF"
-            sed -i '/CONFIG_FB=/d' "$CONF"
-            sed -i '/CONFIG_VT=/d' "$CONF"
-            sed -i '/CONFIG_VHOST=/d' "$CONF"
-            sed -i '/CONFIG_COMEDI=/d' "$CONF"
-            sed -i '/CONFIG_AGP=/d' "$CONF"
-            sed -i '/CONFIG_INFINIBAND=/d' "$CONF"
-            sed -i '/CONFIG_DRM_LEGACY=/d' "$CONF"
-            sed -i '/CONFIG_FAULT_INJECTION=/d' "$CONF"
-            sed -i '/CONFIG_SAMPLES=/d' "$CONF"
-            # Explicitly disable them
-            echo "# CONFIG_STAGING is not set" >> "$CONF"
-            echo "# CONFIG_SOUND is not set" >> "$CONF"
-            echo "# CONFIG_SND is not set" >> "$CONF"
-            echo "# CONFIG_RC_CORE is not set" >> "$CONF"
-            echo "# CONFIG_MEDIA_RC_SUPPORT is not set" >> "$CONF"
-            echo "# CONFIG_LIRC is not set" >> "$CONF"
-            echo "# CONFIG_VIDEO_DEV is not set" >> "$CONF"
-            echo "# CONFIG_FB is not set" >> "$CONF"
-            echo "# CONFIG_VT is not set" >> "$CONF"
-            echo "# CONFIG_VHOST is not set" >> "$CONF"
-            echo "# CONFIG_COMEDI is not set" >> "$CONF"
-            echo "# CONFIG_AGP is not set" >> "$CONF"
-            echo "# CONFIG_INFINIBAND is not set" >> "$CONF"
-            echo "# CONFIG_DRM_LEGACY is not set" >> "$CONF"
-            echo "# CONFIG_FAULT_INJECTION is not set" >> "$CONF"
-            echo "# CONFIG_SAMPLES is not set" >> "$CONF"
-            # Re-run olddefconfig to clean up
+            # Remove all configs for subsystems that don't compile with Clang 17 on 4.14
+            for CFG in STAGING SOUND SND RC_CORE MEDIA_RC_SUPPORT LIRC \
+              V4L_PLATFORM_DRIVERS V4L_MEM2MEM_DRIVERS RADIO_ADAPTERS \
+              VIDEO_DEV FB VT VHOST COMEDI AGP INFINIBAND DRM_LEGACY \
+              FAULT_INJECTION SAMPLES; do
+              sed -i "/CONFIG_${CFG}=/d" "$CONF"
+              echo "# CONFIG_${CFG} is not set" >> "$CONF"
+            done
+            # Re-run olddefconfig to clean up after removal
             make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
               olddefconfig O=out
             echo "Clang-incompatible subsystems disabled"
@@ -167,6 +219,7 @@ jobs:
               ls -lh out/arch/arm64/boot/Image.gz-dtb
             else
               echo "BUILD FAILED: Image.gz-dtb not found"
+              echo "Checking for alternative output files..."
               ls -la out/arch/arm64/boot/ 2>/dev/null || echo "boot dir missing"
               exit 1
             fi
@@ -175,19 +228,33 @@ jobs:
           name: "Package AnyKernel3 ZIP"
           command: |
             cd /tmp/infinity-kernel-build
+            # Find and copy AnyKernel3 from SRC_ROOT
+            AK3=""
+            if [ -d "$SRC_ROOT/AnyKernel3" ]; then
+              AK3="$SRC_ROOT/AnyKernel3"
+            elif [ -d /tmp/infinity-kernel-build/AnyKernel3 ]; then
+              AK3="/tmp/infinity-kernel-build/AnyKernel3"
+            fi
+
+            if [ -z "$AK3" ] || [ ! -d "$AK3" ]; then
+              echo "ERROR: AnyKernel3 directory not found!"
+              exit 1
+            fi
+
             # Copy kernel image
-            cp -f kernel_src/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-            # Update banner version
-            sed -i 's/v1\.0\.[0-9]/v1.0.7/g' AnyKernel3/banner 2>/dev/null || true
+            cp -f kernel_src/out/arch/arm64/boot/Image.gz-dtb "$AK3/"
+            echo "[OK] Image.gz-dtb copied to AnyKernel3"
+
             # Create ZIP
-            cd AnyKernel3
-            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.7-vayu.zip *
-            echo "ZIP created"
-            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.7-vayu.zip
+            cd "$AK3"
+            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.8-vayu.zip *
+            echo ""
+            echo "ZIP created:"
+            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.8-vayu.zip
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.7-vayu.zip
-          destination: Infinity-Kernel-v1.0.7-vayu.zip
+          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.8-vayu.zip
+          destination: Infinity-Kernel-v1.0.8-vayu.zip
 
 workflows:
   infinity_kernel_build:
