@@ -20,7 +20,7 @@ diff --git a/drivers/cpufreq/cpufreq.c b/drivers/cpufreq/cpufreq.c
 index bcdef01234..bcdef34567 100644
 --- a/drivers/cpufreq/cpufreq.c
 +++ b/drivers/cpufreq/cpufreq.c
-@@ -52,6 +52,15 @@
+@@ -52,6 +52,20 @@
   * Infinity Kernel: Added input boost for gaming responsiveness
   */
 
