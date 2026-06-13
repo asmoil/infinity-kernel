@@ -5,17 +5,23 @@ jobs:
     docker:
       - image: ubuntu:22.04
     environment:
-      KERNEL_DIR: /home/circleci/kernel_src
+      PROJECT_DIR: /tmp/infinity-kernel-build
+      KERNEL_DIR: /tmp/infinity-kernel-build/kernel_src
+      PROTON_PATH: /tmp/infinity-kernel-build/proton-clang
       ARCH: arm64
       SUBARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
-      PROTON_PATH: /home/circleci/proton-clang
       ZIP_NAME: InfinityKernel-v1.0.1-vayu.zip
     resource_class: large
     steps:
       - checkout
+      - run:
+          name: Setup build directory
+          command: |
+            mkdir -p "$PROJECT_DIR"
+            cp -a /root/project/. "$PROJECT_DIR/"
       - run:
           name: Install build dependencies
           command: |
@@ -28,7 +34,7 @@ jobs:
       - run:
           name: Download Proton Clang 17
           command: |
-            cd /home/circleci
+            cd "$PROJECT_DIR"
             if [ ! -d "$PROTON_PATH" ]; then
               wget -qO proton-clang.tar.gz "https://github.com/kdrag0n/proton-clang/releases/download/17.0/proton-clang-17.tar.gz"
               mkdir -p "$PROTON_PATH"
@@ -39,19 +45,20 @@ jobs:
       - run:
           name: Clone Xiaomi kernel source (vayu-r-oss)
           command: |
+            cd "$PROJECT_DIR"
             git clone --depth=1 -b vayu-r-oss \
               https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
               "$KERNEL_DIR"
       - run:
           name: Copy Infinity Kernel defconfig
           command: |
-            cp /home/circleci/project/arch/arm64/configs/infinity_defconfig \
+            cp "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" \
                "$KERNEL_DIR/arch/arm64/configs/infinity_defconfig"
       - run:
           name: Apply kernel patches
           command: |
             cd "$KERNEL_DIR"
-            for p in /home/circleci/project/patches/*.patch; do
+            for p in "$PROJECT_DIR"/patches/*.patch; do
               if [ -f "$p" ]; then
                 echo "Applying: $(basename $p)"
                 patch -p1 < "$p" || { echo "FAILED: $(basename $p)"; exit 1; }
@@ -62,13 +69,11 @@ jobs:
           command: |
             cd "$KERNEL_DIR"
 
-            # Copy driver source
-            cp -r /home/circleci/project/drivers/charging drivers/infinity_charging
-            cp /home/circleci/project/include/linux/infinity_charging_control.h include/linux/
+            cp -r "$PROJECT_DIR/drivers/charging" drivers/infinity_charging
+            cp "$PROJECT_DIR/include/linux/infinity_charging_control.h" include/linux/
             mkdir -p scripts/charging_bypass
-            cp /home/circleci/project/scripts/charging_bypass/infinity_charging.dts scripts/charging_bypass/
+            cp "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" scripts/charging_bypass/
 
-            # Register driver in kernel build system
             echo 'obj-y += infinity_charging/' >> drivers/Makefile
             echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
       - run:
@@ -78,7 +83,6 @@ jobs:
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
 
-            # Merge fragment on top of base vayu_defconfig
             scripts/kconfig/merge_config.sh \
               arch/arm64/configs/vayu_defconfig \
               arch/arm64/configs/infinity_defconfig \
@@ -107,14 +111,12 @@ jobs:
       - run:
           name: Package AnyKernel3 ZIP
           command: |
-            cd /home/circleci/project
+            cd "$PROJECT_DIR"
 
-            # Copy kernel images (try multiple formats)
             cp "$KERNEL_DIR/out/arch/arm64/boot/Image.gz-dtb" AnyKernel3/Image.gz-dtb 2>/dev/null || \
             cp "$KERNEL_DIR/out/arch/arm64/boot/Image.gz" AnyKernel3/Image.gz 2>/dev/null || \
               { echo "No kernel image found"; exit 1; }
 
-            # Copy DTB/DTBO
             find "$KERNEL_DIR/out/arch/arm64/boot/dts/qcom/" \
               -maxdepth 1 \( -name "*.dtb" -o -name "*.dtbo" \) \
               -exec cp {} AnyKernel3/ \; 2>/dev/null || true
@@ -123,21 +125,19 @@ jobs:
             [ -f "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" ] && \
               cp "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" AnyKernel3/dtb.img 2>/dev/null || true
 
-            # Set tools executable
             chmod 755 AnyKernel3/tools/*
 
-            # Create ZIP
             cd AnyKernel3
-            zip -r9 "/home/circleci/project/$ZIP_NAME" . \
+            zip -r9 "$PROJECT_DIR/$ZIP_NAME" . \
               -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
-            cd /home/circleci/project
+            cd "$PROJECT_DIR"
 
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /home/circleci/project/InfinityKernel-v1.0.1-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.1-vayu.zip
           destination: InfinityKernel-v1.0.1-vayu.zip
       - persist_to_workspace:
-          root: /home/circleci/project
+          root: /tmp/infinity-kernel-build
           paths:
             - InfinityKernel-v1.0.1-vayu.zip
 
