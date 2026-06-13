@@ -144,6 +144,24 @@ CONFIG_KALLSYMS=y
 CONFIG_KALLSYMS_ALL=y
 
 #
+# Disable Clang-incompatible subsystems (not needed on phone)
+#
+# CONFIG_RC_CORE is not set
+# CONFIG_MEDIA_RC_SUPPORT is not set
+# CONFIG_LIRC is not set
+# CONFIG_V4L_PLATFORM_DRIVERS is not set
+# CONFIG_V4L_MEM2MEM_DRIVERS is not set
+# CONFIG_RADIO_ADAPTERS is not set
+# CONFIG_VIDEO_DEV is not set
+# CONFIG_SOUND is not set
+# CONFIG_SND is not set
+# CONFIG_DRM_LEGACY is not set
+# CONFIG_AGP is not set
+# CONFIG_INFINIBAND is not set
+# CONFIG_FAULT_INJECTION is not set
+# CONFIG_SAMPLES is not set
+
+#
 # Other Optimizations
 #
 CONFIG_TRANSPARENT_HUGEPAGE=y
