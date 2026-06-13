@@ -23,7 +23,7 @@ jobs:
             apt-get install -y \
               git wget unzip curl bc bison build-essential cpio \
               flex g++ gcc-aarch64-linux-gnu libc6-dev-i386 \
-              libelf-dev libssl-dev python3 zstd lz4-tool \
+              libelf-dev libssl-dev python3 zstd lz4 \
               device-tree-compiler rsync file
       - run:
           name: Download Proton Clang 17
