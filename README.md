@@ -145,11 +145,8 @@ cd InfinityKernel
 git clone --depth=1 -b vayu-r-oss \
   https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel_src
 
-# Apply patches
-cd kernel_src
-for p in ../patches/*.patch; do
-  patch -p1 < "$p"
-done
+# Apply patches (sed-based, works on any vayu-r-oss snapshot)
+bash ../patches/apply_all.sh .
 
 # Copy defconfig
 cp ../arch/arm64/configs/infinity_defconfig arch/arm64/configs/

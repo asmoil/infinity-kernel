@@ -64,13 +64,7 @@ jobs:
       - run:
           name: Apply kernel patches
           command: |
-            cd "$KERNEL_DIR"
-            for p in "$PROJECT_DIR"/patches/*.patch; do
-              if [ -f "$p" ]; then
-                echo "Applying: $(basename $p)"
-                patch -p1 < "$p" || { echo "FAILED: $(basename $p)"; exit 1; }
-              fi
-            done
+            bash "$PROJECT_DIR/patches/apply_all.sh" "$KERNEL_DIR"
       - run:
           name: Integrate charging driver
           command: |
