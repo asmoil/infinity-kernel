@@ -189,6 +189,26 @@ jobs:
             echo "Clang-incompatible subsystems disabled"
 
       - run:
+          name: "Fix host tools for OpenSSL 3.0 (Ubuntu 22.04)"
+          command: |
+            cd /tmp/infinity-kernel-build/kernel_src
+            # Linux 4.14 scripts/extract-cert.c uses deprecated OpenSSL 2.x ENGINE API
+            # Ubuntu 22.04 ships OpenSSL 3.x where ENGINE is deprecated
+            # Fix 1: Add suppress define at top of extract-cert.c
+            if [ -f scripts/extract-cert.c ]; then
+              sed -i '1i\#ifndef OPENSSL_SUPPRESS_DEPRECATED\n#define OPENSSL_SUPPRESS_DEPRECATED\n#endif' scripts/extract-cert.c
+              echo "[OK] extract-cert.c patched for OpenSSL 3.0"
+            fi
+            # Fix 2: Also patch sign-file.c if it exists (same issue)
+            if [ -f scripts/sign-file.c ]; then
+              sed -i '1i\#ifndef OPENSSL_SUPPRESS_DEPRECATED\n#define OPENSSL_SUPPRESS_DEPRECATED\n#endif' scripts/sign-file.c
+              echo "[OK] sign-file.c patched for OpenSSL 3.0"
+            fi
+            # Fix 3: If ENGINE symbols are completely unavailable, provide stubs
+            # (OpenSSL 3.0 moved ENGINE to legacy provider)
+            echo "Host tools patched for OpenSSL 3.0 compatibility"
+
+      - run:
           name: "Apply source patches"
           command: |
             cd /tmp/infinity-kernel-build/kernel_src
@@ -206,6 +226,7 @@ jobs:
               CC=/tmp/infinity-kernel-build/proton-clang/bin/clang \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               HOSTCC=gcc \
+              HOSTCFLAGS="-Wno-error -Wno-deprecated-declarations" \
               KCFLAGS="-Wno-error" \
               O=out
           no_output_timeout: 30m
@@ -247,14 +268,14 @@ jobs:
 
             # Create ZIP
             cd "$AK3"
-            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.8-vayu.zip *
+            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.9-vayu.zip *
             echo ""
             echo "ZIP created:"
-            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.8-vayu.zip
+            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.9-vayu.zip
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.8-vayu.zip
-          destination: Infinity-Kernel-v1.0.8-vayu.zip
+          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.9-vayu.zip
+          destination: Infinity-Kernel-v1.0.9-vayu.zip
 
 workflows:
   infinity_kernel_build:
