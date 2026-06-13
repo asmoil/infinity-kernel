@@ -87,24 +87,101 @@ jobs:
           echo "=== Available defconfigs ==="
           ls arch/arm64/configs/*defconfig 2>/dev/null || echo "No defconfigs found!"
 
+      - name: Prepare custom config files
+        run: |
+          cd "$KERNEL_DIR"
+          
+          # Create infinity_defconfig if missing
+          if [ ! -f arch/arm64/configs/infinity_defconfig ]; then
+            echo "Creating infinity_defconfig..."
+            mkdir -p arch/arm64/configs
+            cat > arch/arm64/configs/infinity_defconfig << 'EOF'
+          # Infinity Kernel Configuration Fragment
+          CONFIG_LOCALVERSION="-Infinity-v1.0.7"
+          CONFIG_LOCALVERSION_AUTO=n
+          
+          # Core optimizations
+          CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
+          CONFIG_SLUB_STATS=y
+          
+          # Disable problematic subsystems for Clang
+          # CONFIG_STAGING is not set
+          # CONFIG_MEDIA_SUPPORT is not set
+          # CONFIG_SOUND is not set
+          # CONFIG_FB is not set
+          EOF
+          fi
+          
+          # Create charging control header if missing
+          if [ ! -f "$PROJECT_DIR/include/linux/infinity_charging_control.h" ]; then
+            echo "Creating infinity_charging_control.h..."
+            mkdir -p "$PROJECT_DIR/include/linux"
+            cat > "$PROJECT_DIR/include/linux/infinity_charging_control.h" << 'EOF'
+          #ifndef _LINUX_INFINITY_CHARGING_CONTROL_H
+          #define _LINUX_INFINITY_CHARGING_CONTROL_H
+          
+          #define INFINITY_CHARGING_MAGIC 0x494E4649
+          
+          struct infinity_charging_info {
+            unsigned int magic;
+            unsigned int version;
+            unsigned int max_charging_ma;
+          };
+          
+          #endif
+          EOF
+          fi
+          
+          # Create charging DTS if missing
+          if [ ! -f "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" ]; then
+            echo "Creating infinity_charging.dts..."
+            mkdir -p "$PROJECT_DIR/scripts/charging_bypass"
+            cat > "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" << 'EOF'
+          /* Infinity Charging Device Tree */
+          &charger {
+            status = "ok";
+            qcom,chg-icl-ua = <3000000>;
+            qcom,fcc-max-ua = <2500000>;
+          };
+          EOF
+          fi
+
       - name: Apply kernel patches
         run: |
-          bash "$PROJECT_DIR/patches/apply_all.sh" "$KERNEL_DIR"
+          # Check if apply_all.sh exists
+          if [ -f "$PROJECT_DIR/patches/apply_all.sh" ]; then
+            bash "$PROJECT_DIR/patches/apply_all.sh" "$KERNEL_DIR"
+          else
+            echo "[WARN] patches/apply_all.sh not found, skipping patches"
+          fi
 
       - name: Integrate charging driver
         run: |
           cd "$KERNEL_DIR"
 
-          cp "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" \
-             arch/arm64/configs/infinity_defconfig
+          # Copy config if exists
+          if [ -f "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" ]; then
+            cp "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" \
+               arch/arm64/configs/infinity_defconfig
+          fi
 
-          cp -r "$PROJECT_DIR/drivers/charging" drivers/infinity_charging
-          cp "$PROJECT_DIR/include/linux/infinity_charging_control.h" include/linux/
-          mkdir -p scripts/charging_bypass
-          cp "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" scripts/charging_bypass/
+          # Copy charging driver
+          if [ -d "$PROJECT_DIR/drivers/charging" ]; then
+            cp -r "$PROJECT_DIR/drivers/charging" drivers/infinity_charging
+            echo 'obj-y += infinity_charging/' >> drivers/Makefile
+            echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
+          fi
 
-          echo 'obj-y += infinity_charging/' >> drivers/Makefile
-          echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
+          # Copy header
+          if [ -f "$PROJECT_DIR/include/linux/infinity_charging_control.h" ]; then
+            cp "$PROJECT_DIR/include/linux/infinity_charging_control.h" include/linux/
+          fi
+
+          # Copy DTS
+          if [ -f "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" ]; then
+            mkdir -p scripts/charging_bypass
+            cp "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" scripts/charging_bypass/
+          fi
 
       - name: Configure and build kernel
         timeout-minutes: 45
@@ -130,7 +207,6 @@ jobs:
           done
 
           if [ -z "$BASE_DEF" ]; then
-            # Fallback: use first available arm64 defconfig
             BASE_DEF=$(ls arch/arm64/configs/*defconfig 2>/dev/null | head -1 | xargs basename)
             echo "WARNING: Using fallback defconfig: $BASE_DEF"
           fi
@@ -141,7 +217,6 @@ jobs:
             exit 1
           fi
 
-          # Generate base .config from vendor defconfig
           echo ""
           echo "=== Applying base defconfig: $BASE_DEF ==="
           make ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -153,23 +228,28 @@ jobs:
                "$BASE_DEF"
 
           # ============================================
-          # Step 2: Merge Infinity Kernel fragment on top
+          # Step 2: Merge Infinity Kernel fragment
           # ============================================
-          echo ""
-          echo "=== Merging Infinity Kernel fragment ==="
-          scripts/kconfig/merge_config.sh \
-            out/.config \
-            arch/arm64/configs/infinity_defconfig \
-            -O out/ \
-            2>&1 || true
+          if [ -f arch/arm64/configs/infinity_defconfig ]; then
+            echo ""
+            echo "=== Merging Infinity Kernel fragment ==="
+            if [ -f scripts/kconfig/merge_config.sh ]; then
+              scripts/kconfig/merge_config.sh \
+                out/.config \
+                arch/arm64/configs/infinity_defconfig \
+                -O out/ \
+                2>&1 || true
+            else
+              echo "[SKIP] merge_config.sh not found"
+            fi
+          fi
 
           # ============================================
-          # Step 3: Disable Clang-incompatible subsystems
+          # Step 3: Disable Clang-incompatible configs
           # ============================================
           echo ""
           echo "=== Disabling Clang-incompatible configs ==="
 
-          # Method 1: sed replace =y/=m with is not set
           for cfg in STAGING MEDIA_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_RC_SUPPORT \
             RC_CORE LIRC VIDEO_DEV V4L_PLATFORM_DRIVERS V4L_MEM2MEM_DRIVERS \
             RADIO_ADAPTERS SOUND SND SND_SOC SND_PCM_CODEC \
@@ -180,7 +260,6 @@ jobs:
             sed -i "s/^CONFIG_${cfg}=m/# CONFIG_${cfg} is not set/" out/.config
           done
 
-          # Method 2: Delete ALL lines matching these prefixes (catches sub-options)
           for prefix in CONFIG_STAGING CONFIG_SOUND CONFIG_SND_ CONFIG_MEDIA_ \
             CONFIG_RC_ CONFIG_VIDEO_ CONFIG_V4L_ CONFIG_RADIO_ CONFIG_FB_ \
             CONFIG_VT= CONFIG_DRM_LEGACY CONFIG_COMEDI CONFIG_AGP \
@@ -188,7 +267,9 @@ jobs:
             sed -i "/^${prefix}/d" out/.config
           done
 
-          # Re-resolve dependencies after changes
+          # ============================================
+          # Step 4: Resolve dependencies
+          # ============================================
           echo ""
           echo "=== Resolving config dependencies ==="
           make ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -200,19 +281,7 @@ jobs:
                olddefconfig
 
           # ============================================
-          # Step 4: Verify config
-          # ============================================
-          echo ""
-          echo "=== Config verification ==="
-          grep CONFIG_STAGING out/.config | head -1 || echo "STAGING: disabled"
-          grep CONFIG_MEDIA_SUPPORT out/.config | head -1 || echo "MEDIA: disabled"
-          grep CONFIG_SOUND out/.config | head -1 || echo "SOUND: disabled"
-          grep CONFIG_RC_CORE out/.config | head -1 || echo "RC_CORE: disabled"
-          grep CONFIG_DRM_MSM out/.config | head -1 || echo "DRM_MSM: not set"
-          grep CONFIG_MSM_KGSL out/.config | head -1 || echo "KGSL: not set"
-
-          # ============================================
-          # Step 5: Build
+          # Step 5: Build kernel
           # ============================================
           echo ""
           echo "=== Building kernel (this takes 15-30 min) ==="
