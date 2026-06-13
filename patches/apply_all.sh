@@ -1,5 +1,5 @@
 #!/bin/bash
-## apply_all.sh — Infinity Kernel v1.0.2
+## apply_all.sh — Infinity Kernel v1.0.7
 ## Applies all optimizations via sed/grep/echo on Linux 4.14 (vayu-r-oss).
 ## All operations are safe: file existence is checked, missing patterns are OK.
 ## Usage: bash apply_all.sh <kernel_src_dir>
@@ -10,7 +10,7 @@ if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
     exit 1
 fi
 
-echo "=== Applying Infinity Kernel v1.0.2 patches ==="
+echo "=== Applying Infinity Kernel v1.0.7 patches ==="
 
 ###############################################
 # Helper: safe_sed <file> <pattern> <replacement>
@@ -159,12 +159,12 @@ if [ -f "$SRC/net/ipv4/Kconfig" ]; then
     if ! grep -q 'TCP_CONG_BBR' "$SRC/net/ipv4/Kconfig" 2>/dev/null; then
         sed -i '/config TCP_CONG_HTCP/i\
 config TCP_CONG_BBR\
-\	tistate "BBR TCP"\
-\	default n\
-\	select NET_SCH_FQ_CODEL\
-\	---help---\
-\	  BBR (Bottleneck Bandwidth and RTT) congestion control.\
-\	  Requires FQ or FQ_CODEL qdisc.\
+\       tistate "BBR TCP"\
+\       default n\
+\       select NET_SCH_FQ_CODEL\
+\       ---help---\
+\         BBR (Bottleneck Bandwidth and RTT) congestion control.\
+\         Requires FQ or FQ_CODEL qdisc.\
 ' "$SRC/net/ipv4/Kconfig" 2>/dev/null || true
     fi
 else
@@ -190,20 +190,20 @@ if [ ! -f "$SRC/net/ipv4/bbr.c" ]; then
 #include <net/tcp.h>
 
 static struct tcp_congestion_ops tcp_bbr __read_mostly = {
-	.name		= "bbr",
-	.owner		= THIS_MODULE,
-	.info		= NULL,
-	.cong_control	= NULL,
+        .name           = "bbr",
+        .owner          = THIS_MODULE,
+        .info           = NULL,
+        .cong_control   = NULL,
 };
 
 static int __init bbr_register(void)
 {
-	return tcp_register_congestion_control(&tcp_bbr);
+        return tcp_register_congestion_control(&tcp_bbr);
 }
 
 static void __exit bbr_unregister(void)
 {
-	tcp_unregister_congestion_control(&tcp_bbr);
+        tcp_unregister_congestion_control(&tcp_bbr);
 }
 
 module_init(bbr_register);
@@ -465,10 +465,10 @@ if [ -f "$SRC/fs/Kconfig" ]; then
         else
             echo '' >> "$SRC/fs/Kconfig"
             echo 'config SUFS_FS' >> "$SRC/fs/Kconfig"
-            echo '	tristate "SUFS (Systemless UFS) support"' >> "$SRC/fs/Kconfig"
-            echo '	default y' >> "$SRC/fs/Kconfig"
-            echo '	help' >> "$SRC/fs/Kconfig"
-            echo '	  Systemless UFS filesystem support for root managers.' >> "$SRC/fs/Kconfig"
+            echo '      tristate "SUFS (Systemless UFS) support"' >> "$SRC/fs/Kconfig"
+            echo '      default y' >> "$SRC/fs/Kconfig"
+            echo '      help' >> "$SRC/fs/Kconfig"
+            echo '        Systemless UFS filesystem support for root managers.' >> "$SRC/fs/Kconfig"
             echo '' >> "$SRC/fs/Kconfig"
         fi
         echo "  SUFS Kconfig added"
@@ -521,4 +521,4 @@ fi
 
 echo "  SUFS: done"
 
-echo "=== All Infinity Kernel v1.0.2 patches applied successfully ==="
+echo "=== All Infinity Kernel v1.0.7 patches applied successfully ==="

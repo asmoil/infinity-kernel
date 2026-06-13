@@ -102,15 +102,9 @@ Systemless UFS filesystem stub — enables SUFS overlay mount capabilities for a
 │       ├── kyriepatch.sh           # MIUI DSI patch (MIUI-only)
 │       └── infinity_init.sh        # Boot init (BBR, ZRAM, KSM, etc.)
 ├── arch/arm64/configs/
-│   └── infinity_defconfig          # Kconfig fragment (merged on vayu_defconfig)
+│   └── infinity_defconfig          # Kconfig fragment (merged on vayu_user_defconfig)
 ├── patches/
-│   ├── 0001-cpu-scheduler-tuning.patch
-│   ├── 0002-battery-power-optimization.patch
-│   ├── 0003-fsync-io-optimization.patch
-│   ├── 0004-gpu-adreno618-tuning.patch
-│   ├── 0005-tcp-bbr-fastopen.patch
-│   ├── 0006-root-manager-support.patch
-│   └── 0007-sufs-support.patch
+│   └── apply_all.sh                # All-in-one sed patch script (7 sections)
 ├── drivers/charging/
 │   ├── infinity_charging_control.c  # Charging bypass platform driver
 │   ├── Kconfig
@@ -145,35 +139,37 @@ cd InfinityKernel
 git clone --depth=1 -b vayu-r-oss \
   https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel_src
 
-# Apply patches (sed-based, works on any vayu-r-oss snapshot)
-bash ../patches/apply_all.sh .
+# Generate base .config from the REAL device defconfig
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- vayu_user_defconfig O=out
 
-# Copy defconfig
-cp ../arch/arm64/configs/infinity_defconfig arch/arm64/configs/
+# Merge Infinity defconfig fragment ON TOP of base
+scripts/kconfig/merge_config.sh -m out/.config arch/arm64/configs/infinity_defconfig
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig O=out
 
-# Copy charging driver
-cp -r ../drivers/charging drivers/infinity_charging
-cp ../include/linux/infinity_charging_control.h include/linux/
-echo 'obj-y += infinity_charging/' >> drivers/Makefile
-echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
+# Apply source patches (sed-based, 7 sections)
+bash patches/apply_all.sh kernel_src
 
-# Download Proton Clang 17
-wget -qO proton-clang.tar.gz \
-  "https://github.com/kdrag0n/proton-clang/releases/download/17.0/proton-clang-17.tar.gz"
-mkdir -p proton-clang && tar -xzf proton-clang.tar.gz -C proton-clang --strip-components=1
+# Clone Proton Clang 17 (git, NOT tar.gz)
+git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
+
+# Fix LLVM host tools conflict (as -> as.llvm)
+cd proton-clang/bin
+for tool in as nm ar ranlib objcopy objdump strip; do
+  [ -f "$tool" ] && mv "$tool" "${tool}.llvm"
+done
+cd ../..
 
 # Build
-export PATH="$PWD/proton-clang/bin:$PATH"
-export ARCH=arm64 SUBARCH=arm64
-export CROSS_COMPILE=aarch64-linux-gnu-
-export CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
-
-make ARCH=$ARCH O=out infinity_defconfig
-make -j$(nproc) ARCH=$ARCH O=out
+make -j$(nproc) \
+  ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+  CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+  CC=$PWD/proton-clang/bin/clang \
+  CLANG_TRIPLE=aarch64-linux-gnu- \
+  HOSTCC=gcc KCFLAGS="-Wno-error" O=out
 
 # Package
-cp out/arch/arm64/boot/Image.gz-dtb ../AnyKernel3/
-cd ../AnyKernel3
+cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+cd AnyKernel3
 zip -r9 ../InfinityKernel-v1.0.7-vayu.zip . -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
 ```
 
