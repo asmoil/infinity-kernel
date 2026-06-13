@@ -32,44 +32,22 @@ jobs:
               libelf-dev libssl-dev python3 zstd liblz4-tool \
               device-tree-compiler rsync file
       - run:
-          name: Download Proton Clang 17
-          no_output_timeout: 10m
+          name: Clone Proton Clang toolchain
+          no_output_timeout: 15m
           command: |
             cd "$PROJECT_DIR"
-            if [ ! -d "$PROTON_PATH" ]; then
-              PROTON_URL="https://github.com/kdrag0n/proton-clang/releases/download/17.0/proton-clang-17.tar.gz"
+            if [ ! -x "$PROTON_PATH/bin/clang" ]; then
+              echo "Cloning Proton Clang..."
+              git clone --depth=1 \
+                https://github.com/kdrag0n/proton-clang.git \
+                "$PROTON_PATH"
 
-              echo "Downloading Proton Clang 17..."
-              wget --progress=bar:force:noscroll \
-                   --timeout=60 --tries=3 --retry-connrefused \
-                   -O proton-clang.tar.gz "$PROTON_URL"
-
-              if [ $? -ne 0 ] || [ ! -s proton-clang.tar.gz ]; then
-                echo "Primary URL failed, trying mirror..."
-                rm -f proton-clang.tar.gz
-                wget --progress=bar:force:noscroll \
-                     --timeout=60 --tries=3 \
-                     -O proton-clang.tar.gz \
-                     "https://github.com/kdrag0n/proton-clang/releases/download/17/proton-clang-17.tar.gz"
-              fi
-
-              if [ ! -s proton-clang.tar.gz ]; then
-                echo "ERROR: Failed to download Proton Clang"
-                exit 1
-              fi
-
-              echo "Extracting..."
-              mkdir -p "$PROTON_PATH"
-              tar -xzf proton-clang.tar.gz -C "$PROTON_PATH" --strip-components=1
-              rm -f proton-clang.tar.gz
-
-              # Verify toolchain
               if [ ! -x "$PROTON_PATH/bin/clang" ]; then
-                echo "ERROR: clang not found after extraction"
+                echo "ERROR: clang not found after clone"
                 exit 1
               fi
             fi
-            echo "Proton Clang 17 ready"
+            echo "Proton Clang ready:"
             "$PROTON_PATH/bin/clang" --version | head -1
       - run:
           name: Clone Xiaomi kernel source (vayu-r-oss)
