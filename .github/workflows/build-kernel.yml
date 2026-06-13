@@ -17,28 +17,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    
-    env:
-      PROJECT_DIR: /tmp/infinity-kernel-build
-      KERNEL_DIR: /tmp/infinity-kernel-build/kernel_src
-      PROTON_PATH: /tmp/infinity-kernel-build/proton-clang
-      ARCH: arm64
-      SUBARCH: arm64
-      CROSS_COMPILE: aarch64-linux-gnu-
-      CC: clang
-      CLANG_TRIPLE: aarch64-linux-gnu-
-      ZIP_NAME: InfinityKernel-v1.0.7-vayu.zip
 
     steps:
-      - name: Checkout code
+      - name: Checkout Infinity Kernel repo
         uses: actions/checkout@v4
         with:
-          path: project
+          path: infinity
 
-      - name: Setup build directory
+      - name: Clone Xiaomi kernel source (vayu-r-oss)
+        timeout-minutes: 15
         run: |
-          mkdir -p "$PROJECT_DIR"
-          cp -a project/. "$PROJECT_DIR/"
+          cd $GITHUB_WORKSPACE
+          echo "=== Cloning Xiaomi kernel source ==="
+          git clone --depth=1 -b vayu-r-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
+            kernel_src
+          
+          echo "=== Available defconfigs ==="
+          ls kernel_src/arch/arm64/configs/*defconfig 2>/dev/null || echo "No defconfigs found!"
 
       - name: Install build dependencies
         run: |
@@ -49,47 +45,44 @@ jobs:
             libelf-dev libssl-dev python3 zstd liblz4-tool \
             device-tree-compiler rsync file
 
-      - name: Clone Proton Clang toolchain
+      - name: Download Proton Clang toolchain
         timeout-minutes: 15
         run: |
-          cd "$PROJECT_DIR"
+          PROTON_PATH=$GITHUB_WORKSPACE/proton-clang
           if [ ! -x "$PROTON_PATH/bin/clang" ]; then
-            echo "Cloning Proton Clang..."
-            git clone --depth=1 \
-              https://github.com/kdrag0n/proton-clang.git \
-              "$PROTON_PATH"
-
+            echo "Downloading Proton Clang 17..."
+            mkdir -p "$PROTON_PATH"
+            cd "$PROTON_PATH"
+            
+            # Try to download from releases
+            wget -q --show-progress "https://github.com/kdrag0n/proton-clang/releases/download/17.0/proton-clang-17.tar.gz" -O proton.tar.gz || \
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git . || \
+              { echo "ERROR: Failed to download Proton Clang"; exit 1; }
+            
+            if [ -f proton.tar.gz ]; then
+              tar -xzf proton.tar.gz --strip-components=1
+              rm proton.tar.gz
+            fi
+            
             if [ ! -x "$PROTON_PATH/bin/clang" ]; then
-              echo "ERROR: clang not found after clone"
+              echo "ERROR: clang not found after installation"
               exit 1
             fi
-
-            # Rename LLVM host tools — host build needs GNU binutils
+            
+            # Rename LLVM host tools
             for tool in as ar ld nm objcopy objdump ranlib strip; do
               if [ -f "$PROTON_PATH/bin/$tool" ]; then
                 mv "$PROTON_PATH/bin/$tool" "$PROTON_PATH/bin/$tool.llvm"
               fi
             done
-            echo "Renamed Proton Clang host tools to *.llvm"
+            echo "Renamed LLVM host tools to *.llvm"
           fi
           echo "Proton Clang ready:"
           "$PROTON_PATH/bin/clang" --version | head -1
 
-      - name: Clone Xiaomi kernel source (vayu-r-oss)
-        timeout-minutes: 15
+      - name: Prepare Infinity Kernel customizations
         run: |
-          cd "$PROJECT_DIR"
-          git clone --depth=1 -b vayu-r-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
-            "$KERNEL_DIR"
-
-          # Show available defconfigs
-          echo "=== Available defconfigs ==="
-          ls arch/arm64/configs/*defconfig 2>/dev/null || echo "No defconfigs found!"
-
-      - name: Prepare custom config files
-        run: |
-          cd "$KERNEL_DIR"
+          cd $GITHUB_WORKSPACE/kernel_src
           
           # Create infinity_defconfig if missing
           if [ ! -f arch/arm64/configs/infinity_defconfig ]; then
@@ -99,104 +92,82 @@ jobs:
           # Infinity Kernel Configuration Fragment
           CONFIG_LOCALVERSION="-Infinity-v1.0.7"
           CONFIG_LOCALVERSION_AUTO=n
-          
-          # Core optimizations
           CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
-          CONFIG_SLUB_STATS=y
-          
-          # Disable problematic subsystems for Clang
-          # CONFIG_STAGING is not set
-          # CONFIG_MEDIA_SUPPORT is not set
-          # CONFIG_SOUND is not set
-          # CONFIG_FB is not set
           EOF
           fi
           
-          # Create charging control header if missing
-          if [ ! -f "$PROJECT_DIR/include/linux/infinity_charging_control.h" ]; then
+          # Create charging driver header if missing
+          if [ ! -f include/linux/infinity_charging_control.h ]; then
             echo "Creating infinity_charging_control.h..."
-            mkdir -p "$PROJECT_DIR/include/linux"
-            cat > "$PROJECT_DIR/include/linux/infinity_charging_control.h" << 'EOF'
+            mkdir -p include/linux
+            cat > include/linux/infinity_charging_control.h << 'EOF'
           #ifndef _LINUX_INFINITY_CHARGING_CONTROL_H
           #define _LINUX_INFINITY_CHARGING_CONTROL_H
-          
           #define INFINITY_CHARGING_MAGIC 0x494E4649
-          
           struct infinity_charging_info {
             unsigned int magic;
             unsigned int version;
             unsigned int max_charging_ma;
           };
-          
           #endif
           EOF
           fi
           
-          # Create charging DTS if missing
-          if [ ! -f "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" ]; then
-            echo "Creating infinity_charging.dts..."
-            mkdir -p "$PROJECT_DIR/scripts/charging_bypass"
-            cat > "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" << 'EOF'
-          /* Infinity Charging Device Tree */
-          &charger {
-            status = "ok";
-            qcom,chg-icl-ua = <3000000>;
-            qcom,fcc-max-ua = <2500000>;
-          };
-          EOF
+          # Copy charging driver files
+          if [ -d $GITHUB_WORKSPACE/infinity/drivers/charging ]; then
+            echo "Copying charging driver..."
+            cp -r $GITHUB_WORKSPACE/infinity/drivers/charging drivers/infinity_charging
+            
+            if [ -f $GITHUB_WORKSPACE/infinity/include/linux/infinity_charging_control.h ]; then
+              cp $GITHUB_WORKSPACE/infinity/include/linux/infinity_charging_control.h include/linux/
+            fi
+            
+            # Update Makefiles
+            if ! grep -q 'infinity_charging' drivers/Makefile; then
+              echo 'obj-y += infinity_charging/' >> drivers/Makefile
+            fi
+            if ! grep -q 'infinity_charging' drivers/Kconfig; then
+              echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
+            fi
+          fi
+          
+          # Copy Infinity defconfig
+          if [ -f $GITHUB_WORKSPACE/infinity/arch/arm64/configs/infinity_defconfig ]; then
+            echo "Copying Infinity defconfig..."
+            cp $GITHUB_WORKSPACE/infinity/arch/arm64/configs/infinity_defconfig arch/arm64/configs/
           fi
 
-      - name: Apply kernel patches
+      - name: Apply Infinity patches
         run: |
-          # Check if apply_all.sh exists
-          if [ -f "$PROJECT_DIR/patches/apply_all.sh" ]; then
-            bash "$PROJECT_DIR/patches/apply_all.sh" "$KERNEL_DIR"
+          cd $GITHUB_WORKSPACE/kernel_src
+          
+          if [ -f $GITHUB_WORKSPACE/infinity/patches/apply_all.sh ]; then
+            echo "Applying Infinity patches..."
+            bash $GITHUB_WORKSPACE/infinity/patches/apply_all.sh .
           else
-            echo "[WARN] patches/apply_all.sh not found, skipping patches"
+            echo "[WARN] apply_all.sh not found, skipping patches"
           fi
 
-      - name: Integrate charging driver
+      - name: Configure kernel
         run: |
-          cd "$KERNEL_DIR"
-
-          # Copy config if exists
-          if [ -f "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" ]; then
-            cp "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" \
-               arch/arm64/configs/infinity_defconfig
-          fi
-
-          # Copy charging driver
-          if [ -d "$PROJECT_DIR/drivers/charging" ]; then
-            cp -r "$PROJECT_DIR/drivers/charging" drivers/infinity_charging
-            echo 'obj-y += infinity_charging/' >> drivers/Makefile
-            echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
-          fi
-
-          # Copy header
-          if [ -f "$PROJECT_DIR/include/linux/infinity_charging_control.h" ]; then
-            cp "$PROJECT_DIR/include/linux/infinity_charging_control.h" include/linux/
-          fi
-
-          # Copy DTS
-          if [ -f "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" ]; then
-            mkdir -p scripts/charging_bypass
-            cp "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" scripts/charging_bypass/
-          fi
-
-      - name: Configure and build kernel
-        timeout-minutes: 45
-        run: |
-          cd "$KERNEL_DIR"
+          cd $GITHUB_WORKSPACE/kernel_src
+          
+          PROTON_PATH=$GITHUB_WORKSPACE/proton-clang
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export HOSTCC=gcc
           export PATH="$PROTON_PATH/bin:$PATH"
           export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
-
+          
+          echo "=== Environment ==="
           echo "CC: $(which clang)"
-          echo "AS: $(which as)"
-          echo "LD: $(which ld)"
-
-          # ============================================
-          # Step 1: Find and apply base defconfig
-          # ============================================
+          echo "PATH: $PATH"
+          echo ""
+          
+          # Find base defconfig
           BASE_DEF=""
           for candidate in vayu_defconfig vayu-perf_defconfig vayu_user_defconfig; do
             if [ -f "arch/arm64/configs/${candidate}" ]; then
@@ -205,51 +176,44 @@ jobs:
               break
             fi
           done
-
+          
           if [ -z "$BASE_DEF" ]; then
             BASE_DEF=$(ls arch/arm64/configs/*defconfig 2>/dev/null | head -1 | xargs basename)
-            echo "WARNING: Using fallback defconfig: $BASE_DEF"
+            echo "Using fallback defconfig: $BASE_DEF"
           fi
-
+          
           if [ -z "$BASE_DEF" ]; then
-            echo "ERROR: No defconfig found in arch/arm64/configs/"
+            echo "ERROR: No defconfig found!"
             ls -la arch/arm64/configs/
             exit 1
           fi
-
+          
           echo ""
           echo "=== Applying base defconfig: $BASE_DEF ==="
           make ARCH=$ARCH SUBARCH=$SUBARCH \
-               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE=$CROSS_COMPILE \
                CC=clang \
-               CLANG_TRIPLE=aarch64-linux-gnu- \
-               HOSTCC=gcc \
+               CLANG_TRIPLE=$CLANG_TRIPLE \
+               HOSTCC=$HOSTCC \
                O=out \
                "$BASE_DEF"
-
-          # ============================================
-          # Step 2: Merge Infinity Kernel fragment
-          # ============================================
+          
+          # Merge Infinity defconfig
           if [ -f arch/arm64/configs/infinity_defconfig ]; then
             echo ""
-            echo "=== Merging Infinity Kernel fragment ==="
+            echo "=== Merging Infinity defconfig ==="
             if [ -f scripts/kconfig/merge_config.sh ]; then
               scripts/kconfig/merge_config.sh \
                 out/.config \
                 arch/arm64/configs/infinity_defconfig \
                 -O out/ \
                 2>&1 || true
-            else
-              echo "[SKIP] merge_config.sh not found"
             fi
           fi
-
-          # ============================================
-          # Step 3: Disable Clang-incompatible configs
-          # ============================================
+          
+          # Disable Clang-incompatible configs
           echo ""
-          echo "=== Disabling Clang-incompatible configs ==="
-
+          echo "=== Disabling Clang-incompatible subsystems ==="
           for cfg in STAGING MEDIA_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_RC_SUPPORT \
             RC_CORE LIRC VIDEO_DEV V4L_PLATFORM_DRIVERS V4L_MEM2MEM_DRIVERS \
             RADIO_ADAPTERS SOUND SND SND_SOC SND_PCM_CODEC \
@@ -259,104 +223,121 @@ jobs:
             sed -i "s/^CONFIG_${cfg}=y/# CONFIG_${cfg} is not set/" out/.config
             sed -i "s/^CONFIG_${cfg}=m/# CONFIG_${cfg} is not set/" out/.config
           done
-
+          
           for prefix in CONFIG_STAGING CONFIG_SOUND CONFIG_SND_ CONFIG_MEDIA_ \
             CONFIG_RC_ CONFIG_VIDEO_ CONFIG_V4L_ CONFIG_RADIO_ CONFIG_FB_ \
             CONFIG_VT= CONFIG_DRM_LEGACY CONFIG_COMEDI CONFIG_AGP \
             CONFIG_INFINIBAND CONFIG_SAMPLES= CONFIG_VHOST_; do
             sed -i "/^${prefix}/d" out/.config
           done
-
-          # ============================================
-          # Step 4: Resolve dependencies
-          # ============================================
+          
+          # Resolve dependencies
           echo ""
-          echo "=== Resolving config dependencies ==="
+          echo "=== Resolving kernel config dependencies ==="
           make ARCH=$ARCH SUBARCH=$SUBARCH \
-               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE=$CROSS_COMPILE \
                CC=clang \
-               CLANG_TRIPLE=aarch64-linux-gnu- \
-               HOSTCC=gcc \
+               CLANG_TRIPLE=$CLANG_TRIPLE \
+               HOSTCC=$HOSTCC \
                O=out \
                olddefconfig
 
-          # ============================================
-          # Step 5: Build kernel
-          # ============================================
-          echo ""
-          echo "=== Building kernel (this takes 15-30 min) ==="
+      - name: Build kernel
+        timeout-minutes: 45
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_src
+          
+          PROTON_PATH=$GITHUB_WORKSPACE/proton-clang
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export HOSTCC=gcc
+          export PATH="$PROTON_PATH/bin:$PATH"
+          export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
+          
+          echo "=== Building kernel (this may take 30-45 minutes) ==="
           make -j$(nproc) ARCH=$ARCH SUBARCH=$SUBARCH \
-               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE=$CROSS_COMPILE \
                CC=clang \
-               CLANG_TRIPLE=aarch64-linux-gnu- \
-               HOSTCC=gcc \
+               CLANG_TRIPLE=$CLANG_TRIPLE \
+               HOSTCC=$HOSTCC \
                KCFLAGS="-Wno-error" \
                O=out \
                2>&1 | tee build.log
-
+          
           echo ""
-          echo "=== Error Summary ==="
+          echo "=== Build Summary ==="
           ERROR_COUNT=$(grep -c "error:" build.log 2>/dev/null || echo 0)
           echo "Total errors: $ERROR_COUNT"
           if [ "$ERROR_COUNT" -gt 0 ]; then
             echo "---"
             grep -n "error:" build.log | head -40
           fi
-
+          
           echo ""
-          echo "=== Checking for kernel image ==="
+          echo "=== Checking kernel image ==="
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "BUILD SUCCESS — Image.gz-dtb"
+            echo "✓ BUILD SUCCESS — Image.gz-dtb"
             ls -lh out/arch/arm64/boot/Image.gz-dtb
           elif [ -f out/arch/arm64/boot/Image.gz ]; then
-            echo "BUILD SUCCESS — Image.gz"
+            echo "✓ BUILD SUCCESS — Image.gz"
             ls -lh out/arch/arm64/boot/Image.gz
-          elif grep -q "error:" build.log; then
-            echo "BUILD FAILED — errors found (see above)"
+          elif [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "✗ BUILD FAILED — compilation errors found"
             exit 1
           else
-            echo "BUILD FAILED — no image produced, no errors logged"
-            tail -20 build.log
+            echo "✗ BUILD FAILED — no kernel image produced"
+            tail -50 build.log
             exit 1
           fi
 
-      - name: Package AnyKernel3 ZIP
+      - name: Package AnyKernel3 flasher
         run: |
-          cd "$PROJECT_DIR"
-
-          cp "$KERNEL_DIR/out/arch/arm64/boot/Image.gz-dtb" AnyKernel3/Image.gz-dtb 2>/dev/null || \
-          cp "$KERNEL_DIR/out/arch/arm64/boot/Image.gz" AnyKernel3/Image.gz 2>/dev/null || \
-            { echo "No kernel image found"; exit 1; }
-
-          find "$KERNEL_DIR/out/arch/arm64/boot/dts/qcom/" \
+          cd $GITHUB_WORKSPACE/infinity/AnyKernel3
+          
+          # Copy kernel image
+          if [ -f $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/Image.gz-dtb Image.gz-dtb
+          elif [ -f $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/Image.gz ]; then
+            cp $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/Image.gz Image.gz
+          else
+            echo "ERROR: No kernel image found"
+            exit 1
+          fi
+          
+          # Copy DTB/DTBO files
+          find $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/dts/qcom/ \
             -maxdepth 1 \( -name "*.dtb" -o -name "*.dtbo" \) \
-            -exec cp {} AnyKernel3/ \; 2>/dev/null || true
-          [ -f "$KERNEL_DIR/out/arch/arm64/boot/dtbo.img" ] && \
-            cp "$KERNEL_DIR/out/arch/arm64/boot/dtbo.img" AnyKernel3/dtbo.img 2>/dev/null || true
-          [ -f "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" ] && \
-            cp "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" AnyKernel3/dtb.img 2>/dev/null || true
-
-          chmod 755 AnyKernel3/tools/*
-
-          cd AnyKernel3
-          zip -r9 "$PROJECT_DIR/$ZIP_NAME" . \
+            -exec cp {} . \; 2>/dev/null || true
+          
+          [ -f $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/dtbo.img ] && \
+            cp $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/dtbo.img . 2>/dev/null || true
+          [ -f $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/dtb.img ] && \
+            cp $GITHUB_WORKSPACE/kernel_src/out/arch/arm64/boot/dtb.img . 2>/dev/null || true
+          
+          chmod 755 tools/*
+          
+          # Create flashable ZIP
+          echo "=== Creating flashable ZIP ==="
+          zip -r9 $GITHUB_WORKSPACE/InfinityKernel-v1.0.7-vayu.zip . \
             -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
-          cd "$PROJECT_DIR"
-
-          ls -lh "$ZIP_NAME"
+          
+          ls -lh $GITHUB_WORKSPACE/InfinityKernel-v1.0.7-vayu.zip
 
       - name: Upload build artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: InfinityKernel-vayu
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.7-vayu.zip
+          path: InfinityKernel-v1.0.7-vayu.zip
           retention-days: 30
 
-      - name: Create release
+      - name: Create GitHub Release
         if: success() && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          files: /tmp/infinity-kernel-build/InfinityKernel-v1.0.7-vayu.zip
+          files: InfinityKernel-v1.0.7-vayu.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
