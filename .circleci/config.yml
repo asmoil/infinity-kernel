@@ -57,7 +57,7 @@ jobs:
             fi
 
       - run:
-          name: "Infinity Kernel v1.0.15 - Install dependencies"
+          name: "Infinity Kernel v1.0.16 - Install dependencies"
           command: |
             apt update && apt install -y \
               bc bison build-essential ccache curl flex \
@@ -65,7 +65,7 @@ jobs:
               imagemagick libelf-dev liblz4-tool libncurses5-dev \
               libssl-dev libxml2 libxml2-utils \
               lzop rsync schedtool squashfs-tools \
-              xsltproc zip zlib1g-dev python3 \
+              xsltproc zip zlib1g-dev python3 python-is-python3 \
               gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - run:
@@ -302,14 +302,14 @@ jobs:
 
             # Create ZIP
             cd "$AK3"
-            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.15-vayu.zip *
+            zip -r9 /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.16-vayu.zip *
             echo ""
             echo "ZIP created:"
-            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.15-vayu.zip
+            ls -lh /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.16-vayu.zip
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.15-vayu.zip
-          destination: Infinity-Kernel-v1.0.15-vayu.zip
+          path: /tmp/infinity-kernel-build/Infinity-Kernel-v1.0.16-vayu.zip
+          destination: Infinity-Kernel-v1.0.16-vayu.zip
 
 workflows:
   infinity_kernel_build:
