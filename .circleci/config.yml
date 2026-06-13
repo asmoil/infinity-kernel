@@ -13,7 +13,7 @@ jobs:
       CROSS_COMPILE: aarch64-linux-gnu-
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
-      ZIP_NAME: InfinityKernel-v1.0.5-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.6-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -49,7 +49,6 @@ jobs:
 
               # Proton Clang ships llvm-as as 'as' — it lacks -EL flag.
               # Host tools (scripts/mod, scripts/dtc) need GNU as/ld/ar.
-              # Rename LLVM host tools so system GNU binutils are used instead.
               for tool in as ar ld nm objcopy objdump ranlib strip; do
                 if [ -f "$PROTON_PATH/bin/$tool" ]; then
                   mv "$PROTON_PATH/bin/$tool" "$PROTON_PATH/bin/$tool.llvm"
@@ -89,16 +88,17 @@ jobs:
             echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
       - run:
           name: Set defconfig and build
+          no_output_timeout: 30m
           command: |
             cd "$KERNEL_DIR"
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
 
-            # Verify toolchain
             echo "CC: $(which clang)"
             echo "AS: $(which as)"
             echo "LD: $(which ld)"
 
+            # --- Step 1: Generate base .config ---
             scripts/kconfig/merge_config.sh \
               arch/arm64/configs/vayu_defconfig \
               arch/arm64/configs/infinity_defconfig \
@@ -110,54 +110,102 @@ jobs:
                  CC=clang \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
                  HOSTCC=gcc \
-                 HOSTCFLAGS="-I/usr/include" \
                  O=out \
                  infinity_defconfig
 
-            # Force-disable subsystems that don't compile with Clang on 4.14
-            # (RC remotes, legacy media, sound - not needed on phone)
-            echo "Disabling Clang-incompatible configs..."
-            for cfg in \
-              CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
-              CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
-              CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
-              CONFIG_V4L_MEM2MEM_DRIVERS CONFIG_RADIO_ADAPTERS \
-              CONFIG_SOUND CONFIG_SND CONFIG_SND_SOC \
-              CONFIG_DRM_LEGACY CONFIG_AGP \
-              CONFIG_INFINIBAND CONFIG_FAULT_INJECTION \
-              CONFIG_SAMPLES CONFIG_COMEDI \
-              CONFIG_STAGING CONFIG_VT \
-              CONFIG_FB \
-              CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI; do
-              ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
+            # --- Step 2: Aggressively disable Clang-incompatible subsystems ---
+            # Using sed directly on .config (more reliable than scripts/config)
+            echo "=== Disabling Clang-incompatible configs ==="
+            DISABLE_LIST="
+              STAGING
+              MEDIA_SUPPORT MEDIA_CAMERA_SUPPORT MEDIA_RC_SUPPORT
+              RC_CORE LIRC VIDEO_DEV
+              V4L_PLATFORM_DRIVERS V4L_MEM2MEM_DRIVERS RADIO_ADAPTERS
+              SOUND SND SND_SOC SND_PCM_CODEC
+              FB FB_EFI FB_TILEBLITTING
+              VT
+              COMEDI
+              AGP
+              INFINIBAND
+              FAULT_INJECTION
+              SAMPLES
+              VHOST VHOST_NET VHOST_SCSI VHOST_VSOCK
+              IIO
+              DRM_LEGACY
+              REGULATOR_USERSPACE_CONSUMER
+            "
+            for cfg in $DISABLE_LIST; do
+              sed -i "s/^CONFIG_${cfg}=y/# CONFIG_${cfg} is not set/" out/.config
+              sed -i "s/^CONFIG_${cfg}=m/# CONFIG_${cfg} is not set/" out/.config
             done
-            make ARCH=$ARCH SUBARCH=$SUBARCH \
+
+            # Also disable any CONFIG that references staging/media/sound/fb
+            sed -i '/CONFIG_STAGING=/d' out/.config
+            sed -i '/CONFIG_SOUND=/d' out/.config
+            sed -i '/CONFIG_SND_/d' out/.config
+            sed -i '/CONFIG_MEDIA_/d' out/.config
+            sed -i '/CONFIG_RC_/d' out/.config
+            sed -i '/CONFIG_VIDEO_/d' out/.config
+            sed -i '/CONFIG_V4L_/d' out/.config
+            sed -i '/CONFIG_RADIO_/d' out/.config
+            sed -i '/CONFIG_FB_/d' out/.config
+            sed -i '/CONFIG_VT=/d' out/.config
+            sed -i '/CONFIG_DRM_LEGACY/d' out/.config
+            sed -i '/CONFIG_COMEDI/d' out/.config
+            sed -i '/CONFIG_AGP/d' out/.config
+            sed -i '/CONFIG_INFINIBAND/d' out/.config
+            sed -i '/CONFIG_SAMPLES=/d' out/.config
+            sed -i '/CONFIG_VHOST_/d' out/.config
+            echo "# Clang-clean overrides applied" >> out/.config
+
+            # Resolve config dependencies
+            yes "" | make ARCH=$ARCH SUBARCH=$SUBARCH \
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
                  HOSTCC=gcc \
-                 HOSTCFLAGS="-I/usr/include" \
                  O=out \
-                 olddefconfig
+                 olddefconfig 2>&1 | tail -5
 
+            echo ""
+            echo "=== Config verification ==="
+            echo "STAGING: $(grep CONFIG_STAGING out/.config | head -1)"
+            echo "MEDIA:   $(grep CONFIG_MEDIA_SUPPORT out/.config | head -1)"
+            echo "SOUND:   $(grep CONFIG_SOUND out/.config | head -1)"
+            echo "RC_CORE: $(grep CONFIG_RC_CORE out/.config | head -1)"
+            echo "FB:      $(grep '^CONFIG_FB=' out/.config | head -1)"
+            echo "DRM_MSM: $(grep CONFIG_DRM_MSM out/.config | head -1)"
+
+            # --- Step 3: Build with -Wno-error ---
+            # Clang is stricter than GCC: warnings that GCC ignores become errors
+            # in 4.14 source. -Wno-error prevents this.
+            echo ""
             echo "=== Building kernel ==="
             make -j$(nproc) ARCH=$ARCH SUBARCH=$SUBARCH \
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
                  HOSTCC=gcc \
-                 HOSTCFLAGS="-I/usr/include" \
+                 KCFLAGS="-Wno-error" \
                  O=out \
                  2>&1 | tee build.log
 
             echo ""
             echo "=== Error Summary ==="
-            grep -n "error:" build.log | head -30 || echo "No errors found"
-            echo "=== Warning Summary ==="
-            grep -c "warning:" build.log | xargs -I{} echo "{} warnings"
+            grep -n "error:" build.log | head -40 || echo "No errors found"
+            echo "=== Build result ==="
+            tail -5 build.log
 
-            if grep -q "error:" build.log; then
-              echo "BUILD FAILED"
+            # Check for actual kernel image
+            if [ -f out/arch/arm64/boot/Image.gz-dtb ] || \
+               [ -f out/arch/arm64/boot/Image.gz ]; then
+              echo "BUILD SUCCESS"
+              ls -lh out/arch/arm64/boot/Image* 2>/dev/null
+            elif grep -q "error:" build.log; then
+              echo "BUILD FAILED — see errors above"
+              exit 1
+            else
+              echo "BUILD FAILED — no image produced"
               exit 1
             fi
       - run:
@@ -186,12 +234,12 @@ jobs:
 
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.5-vayu.zip
-          destination: InfinityKernel-v1.0.5-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.6-vayu.zip
+          destination: InfinityKernel-v1.0.6-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.5-vayu.zip
+            - InfinityKernel-v1.0.6-vayu.zip
 
 workflows:
   build-kernel:

@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-v1.0.5-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-v1.0.6-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Device-vayu%20%7C%20bhima-orange?style=flat-square" alt="Device">
   <img src="https://img.shields.io/badge/SoC-SM8250--AC-red?style=flat-square" alt="SoC">
@@ -132,7 +132,7 @@ Systemless UFS filesystem stub — enables SUFS overlay mount capabilities for a
 1. Push this repo to GitHub
 2. Enable CircleCI for the repository
 3. CI will automatically build on push to `main`, `master`, or `dev`
-4. Download `InfinityKernel-v1.0.5-vayu.zip` from CircleCI artifacts
+4. Download `InfinityKernel-v1.0.6-vayu.zip` from CircleCI artifacts
 
 ### Manual Build
 
@@ -174,14 +174,14 @@ make -j$(nproc) ARCH=$ARCH O=out
 # Package
 cp out/arch/arm64/boot/Image.gz-dtb ../AnyKernel3/
 cd ../AnyKernel3
-zip -r9 ../InfinityKernel-v1.0.5-vayu.zip . -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
+zip -r9 ../InfinityKernel-v1.0.6-vayu.zip . -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
 ```
 
 ---
 
 ## How to Flash
 
-1. Download `InfinityKernel-v1.0.5-vayu.zip` from [Releases](../../releases)
+1. Download `InfinityKernel-v1.0.6-vayu.zip` from [Releases](../../releases)
 2. Reboot to recovery (TWRP, OrangeFox, etc.)
 3. Flash the ZIP
 4. Reboot
