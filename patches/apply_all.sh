@@ -521,4 +521,17 @@ fi
 
 echo "  SUFS: done"
 
+###############################################
+# 8. Fix drivers/mfd/spk-id.c missing pinctrl header
+###############################################
+SPK_ID="$SRC/drivers/mfd/spk-id.c"
+if [ -f "$SPK_ID" ]; then
+    if ! grep -q 'linux/pinctrl/consumer.h' "$SPK_ID" 2>/dev/null; then
+        sed -i '1s;^;#include <linux/pinctrl/consumer.h>\n;' "$SPK_ID"
+        echo "  spk-id.c: added pinctrl/consumer.h include"
+    fi
+else
+    echo "  [SKIP] drivers/mfd/spk-id.c not found"
+fi
+
 echo "=== All Infinity Kernel v1.0.2 patches applied successfully ==="

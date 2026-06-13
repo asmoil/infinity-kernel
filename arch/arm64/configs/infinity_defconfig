@@ -8,6 +8,7 @@
 #
 # CPU & Timer
 #
+CONFIG_NR_CPUS=8
 CONFIG_HZ_300=y
 # CONFIG_NO_HZ_FULL is not set
 CONFIG_CPU_FREQ=y
@@ -72,6 +73,7 @@ CONFIG_MD=y
 #
 # Tracing (root manager support)
 #
+CONFIG_SCHEDSTATS=y
 CONFIG_KPROBES=y
 CONFIG_UPROBES=y
 CONFIG_FTRACE=y
