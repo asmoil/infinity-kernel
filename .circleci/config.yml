@@ -245,6 +245,7 @@ jobs:
               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
               CC=/tmp/infinity-kernel-build/proton-clang/bin/clang \
               CLANG_TRIPLE=aarch64-linux-gnu- \
+              LLVM_IAS=1 \
               HOSTCC=gcc \
               HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error -Wno-deprecated-declarations" \
               HOSTLD=gcc \
