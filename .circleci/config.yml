@@ -34,13 +34,17 @@ jobs:
       - run:
           name: Download Proton Clang 17
           command: |
-            cd "$PROJECT_DIR"
-            if [ ! -d "$PROTON_PATH" ]; then
-              wget -qO proton-clang.tar.gz "https://github.com/kdrag0n/proton-clang/releases/download/17.0/proton-clang-17.tar.gz"
-              mkdir -p "$PROTON_PATH"
-              tar -xzf proton-clang.tar.gz -C "$PROTON_PATH" --strip-components=1
-              rm -f proton-clang.tar.gz
-            fi
+            wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+            chmod +x /tmp/llvm.sh
+            /tmp/llvm.sh 17
+            rm -f /tmp/llvm.sh
+            mkdir -p "$PROTON_PATH/bin"
+            for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy \
+                        llvm-objdump llvm-readelf llvm-size llvm-strip; do
+              if command -v "${tool}-17" &>/dev/null; then
+                ln -sf "$(command -v "${tool}-17")" "$PROTON_PATH/bin/$tool"
+              fi
+            done
             echo "Proton Clang ready"
       - run:
           name: Clone Xiaomi kernel source (vayu-r-oss)
