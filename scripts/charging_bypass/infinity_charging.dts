@@ -1,132 +1,23 @@
-/*
- * Infinity Charging Bypass – Device Tree Overlay
- *
- * Copyright (c) 2024 Infinity Kernel Project
- *
- * Target SoC:  Qualcomm Snapdragon 732G (SM7150-AC)
- * Target board: Poco X3 Pro (vayu / bhima)
- *
- * This overlay instantiates the infinity_charging_control platform device
- * and supplies board-specific thermal thresholds and charge-current
- * defaults that override the compiled-in values.
- *
- * Integration note: include this fragment from the board DTS
- * (e.g. qcom/sm7150-vayu.dtsi) or apply at boot via fdtoverlay.
- */
-
 /dts-v1/;
 /plugin/;
 
 / {
-	compatible = "qcom,sm7150";
+    compatible = "qcom,sm7325";
 
-	/*
-	 * Override the global kernel command-line with TCP BBR.
-	 * (Only effective when appended to the base cmdline at boot.)
-	 */
-	fragment@cmdline {
-		target-path = "/chosen";
-		__overlay__ {
-			bootargs = "net.core.default_qdisc=fq_codel";
-		};
-	};
-
-	/*
-	 * ----------------------------------------------------------------
-	 *  Infinity Charging Bypass Control Node
-	 * ----------------------------------------------------------------
-	 *  Placed under /soc so it inherits the SM7150 bus clocks and
-	 *  power domains when the platform driver probes.
-	 */
-	fragment@charge_ctrl {
-		target-path = "/soc";
-
-		__overlay__ {
-			#address-cells = <2>;
-			#size-cells = <2>;
-
-			infinity_charging: infinity-charging@a00000 {
-				compatible = "infinity,charging-control",
-					      "qcom,sm7150-charging-control";
-				reg = <0 0x00a00000 0 0x1000>;
-				status = "okay";
-
-				/*
-				 * Thermal thresholds (millidegrees Celsius)
-				 *
-				 * cooldown-temp-millic: battery temperature at
-				 *   which charging is throttled to ULTRA (500 mA).
-				 * resume-temp-millic:   temperature at which
-				 *   normal profile charging resumes.
-				 */
-				cooldown-temp-millic = <45000>;   /* 45.0 °C */
-				resume-temp-millic   = <40000>;   /* 40.0 °C */
-
-				/*
-				 * Low-battery auto-resume threshold (%)
-				 *
-				 * When battery capacity drops below this value
-				 * the driver restores full (stock) charging
-				 * regardless of the selected mode, ensuring
-				 * the device will not unexpectedly shut down.
-				 */
-				low-batt-cap-pct = <15>;
-
-				/*
-				 * Per-mode charge-current limits (mA)
-				 *
-				 * Index order:
-				 *   [0] DISABLED  – unused (0 = stock)
-				 *   [1] LIGHT     – casual gaming
-				 *   [2] BALANCED  – sustained gaming
-				 *   [3] EXTREME   – competitive gaming
-				 *   [4] ULTRA     – benchmark / peak perf
-				 *
-				 * The driver converts mA → µA when writing to
-				 * POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX.
-				 */
-				charge-current-ma = <0
-						    2500
-						    2000
-						    1500
-						     500>;
-
-				/*
-				 * Polling interval for battery monitoring (ms).
-				 * Consumed by the driver via a module parameter
-				 * fallback; the driver hard-codes 2000 ms.
-				 */
-				poll-interval-ms = <2000>;
-
-				pinctrl-names = "default";
-				pinctrl-0 = <&charge_ctrl_default>;
-			};
-		};
-	};
-
-	/*
-	 * ----------------------------------------------------------------
-	 *  Pinctrl – placeholder for charge-control GPIOs
-	 * ----------------------------------------------------------------
-	 *  On PMI8998 the charger IC is controlled via SPMI/I2C, not
-	 *  direct GPIOs.  This node is included for future board
-	 *  revisions that may wire an external charge-enable pin.
-	 */
-	fragment@pinctrl {
-		target-path = "/soc/pinctrl@5000000";
-
-		__overlay__ {
-			charge_ctrl_default: charge-ctrl-default {
-				pinmux {
-					pins = "gpio123";
-					function = "gpio";
-				};
-				pinconf {
-					pins = "gpio123";
-					drive-strength = <2>;
-					bias-pull-up;
-				};
-			};
-		};
-	};
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            infinity_charging: infinity-charging {
+                compatible = "infinity,charging-control";
+                status = "okay";
+                default-thermal-limit = <42>;
+                default-auto-resume = <15>;
+                charging-modes = <0 1 2 3 4>;
+                mode-light-pause = <80>;
+                mode-balanced-pause = <70>;
+                mode-extreme-pause = <60>;
+                mode-ultra-pause = <50>;
+            };
+        };
+    };
 };

@@ -1,31 +1,28 @@
 # Build artifacts
 *.o
 *.ko
-*.mod
 *.mod.c
-*.cmd
+*.mod
 *.order
-*.builtin
-Module.symvers
-modules.builtin
-modules.order
-
-# Image outputs
-arch/arm64/boot/Image
-arch/arm64/boot/Image.gz
-arch/arm64/boot/Image.lz4
-arch/arm64/boot/dtb.img
-arch/arm64/boot/dtbo.img
-arch/arm64/boot/dts/qcom/*.dtb
-
-# AnyKernel3 output ZIP
-*.zip
+*.cmd
+*.symvers
+*.gz
+*.bz2
+*.lz4
+*.lzo
+*.xz
+*.img
+*.dtb
+*.dtbo
+*.bin
+*.elf
 
 # Build directories
 out/
 build/
-/tmp/
-*.img
+tmp/
+ramdisk/
+split_img/
 
 # IDE
 .vscode/
@@ -38,11 +35,13 @@ build/
 .DS_Store
 Thumbs.db
 
-# CircleCI
-circleci-artifacts/
+# AnyKernel3 flash output
+AnyKernel3/boot.img
+AnyKernel3/boot-new.img
 
-# Backup files
-*.bak
-*.orig
-*.rej
-*.patch.orig
+# Kernel source (cloned during CI)
+kernel_src/
+
+# Archives
+*.zip
+!tools.zip

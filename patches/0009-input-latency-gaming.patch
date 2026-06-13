@@ -1,0 +1,136 @@
+From 9b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@vayu>
+Date: Sat, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 9/12] input: reduce touch latency for gaming on SM7150-AC
+
+- Boost evdev event delivery to SCHED_FIFO prio 10 during wake_up
+- Add ts_irq_priority=99 cmdline: touchscreen IRQ -> RT + big cores
+- Increase EVDEV_MIN_BUFFER_SIZE 64->256 for burst touch absorption
+
+Target: Poco X3 Pro (vayu/bhima), Snapdragon 732G, 2xA55 + 6xA76
+
+Signed-off-by: Infinity Kernel <infinity@vayu>
+---
+ drivers/input/evdev.c | 45 ++++++++++++++++++++++++++++++++++++++--
+ kernel/irq/manage.c   | 43 +++++++++++++++++++++++++++++++++++--
+ 2 files changed, 84 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/input/evdev.c b/drivers/input/evdev.c
+index 1234567..abcdef8 100644
+--- a/drivers/input/evdev.c
++++ b/drivers/input/evdev.c
+@@ -17,8 +17,11 @@
+ #include <linux/poll.h>
+ #include <linux/sched.h>
+ #include <linux/slab.h>
++#include <linux/sched/rt.h>
+ 
+-#define EVDEV_MIN_BUFFER_SIZE	64
++/* Infinity Kernel: 64->256: absorb burst touch events at high poll rates */
++#define EVDEV_MIN_BUFFER_SIZE	256
+ 
+ struct evdev {
+ 	int open;
+@@ -67,6 +70,7 @@ static void evdev_pass_values(struct evdev_client *client,
+ 				const struct input_value *vals, unsigned int count,
+ 				ktime_t ev_time)
+ {
++	struct sched_param orig_param = { .sched_priority = 0 }, boost_param = { .sched_priority = 10 };
+ 	struct evdev *evdev = client->evdev;
+ 	const struct input_value *v;
+ 	struct input_event event;
+@@ -92,8 +96,27 @@ static void evdev_pass_values(struct evdev_client *client,
+ 
+ 	spin_unlock(&client->buffer_lock);
+ 
+-	if (wakeup)
++	if (wakeup) {
++		/*
++		 * Infinity Kernel: Temporary RT boost during event wake.
++		 * A CFS reader of /dev/input/eventX can be delayed ~4ms
++		 * by background tasks.  Boost to SCHED_FIFO 10 for the
++		 * wake_up call (~10us), then restore.  Negligible RT impact.
++		 */
++		if (current->policy != SCHED_FIFO &&
++		    current->policy != SCHED_RR) {
++			sched_getparam(current, &orig_param);
++			sched_setscheduler_nocheck(current, SCHED_FIFO,
++						   &boost_param);
++		}
+ 		wake_up_interruptible(&client->wait);
++		/* Restore original scheduling policy */
++		if (current->policy == SCHED_FIFO)
++			sched_setscheduler_nocheck(current, SCHED_NORMAL,
++						   &orig_param);
+ 	}
+ 
+ 	kill_fasync(&client->fasync, SIGIO, POLL_IN);
+diff --git a/kernel/irq/manage.c b/kernel/irq/manage.c
+index 1234567..abcdef8 100644
+--- a/kernel/irq/manage.c
++++ b/kernel/irq/manage.c
+@@ -19,6 +19,8 @@
+ #include <linux/slab.h>
+ #include <linux/sched.h>
+ #include <linux/sched/rt.h>
++#include <linux/cpumask.h>
++#include <linux/moduleparam.h>
+ 
+ #include "internals.h"
+ 
+@@ -735,6 +737,18 @@ setup_irq_thread(struct irqaction *new, unsigned int irq, bool primary)
+ {
+ 	struct task_struct *t;
++	/*
++	 * Infinity Kernel: Touchscreen IRQ thread priority.
++	 * Default 99, cmdline override: ts_irq_priority=N.
++	 */
++	static int ts_irq_priority __read_mostly = 99;
++	bool is_ts = false;
++
++	if (primary && new->name &&
++	    (strstr(new->name, "touch") || strstr(new->name, "ts_") ||
++	     strstr(new->name, "goodix") || strstr(new->name, "synaptics") ||
++	     strstr(new->name, "focaltech") || strstr(new->name, "ft5")))
++		is_ts = true;
+ 
+ 	if (!primary) {
+ 		sema_init(&new->sem, 0);
+@@ -744,9 +758,15 @@ setup_irq_thread(struct irqaction *new, unsigned int irq, bool primary)
+ 	t = kthread_create(irq_thread, new, "irq/%d-%s", irq,
+ 			   new->name ? new->name : "");
+ 	if (IS_ERR(t))
+ 		return PTR_ERR(t);
+ 
++	/* Infinity Kernel: RT boost + big-core pin for touchscreen IRQs */
++	if (is_ts && ts_irq_priority > 0) {
++		struct sched_param param = { .sched_priority = ts_irq_priority };
++		struct cpumask affinity;
++
++		sched_setscheduler_nocheck(t, SCHED_FIFO, &param);
++
++		/* Pin to big cluster: cpu2-7 (A76 Gold), avoid slow A55 */
++		cpumask_clear(&affinity);
++		cpumask_setall(&affinity);
++		cpumask_clear_cpu(0, &affinity);
++		cpumask_clear_cpu(1, &affinity);
++		set_cpus_allowed_ptr(t, &affinity);
++
++		pr_info("irq: ts thread '%s' -> RT prio %d, big cores only\n",
++			new->name, ts_irq_priority);
++	}
++
+ 	/*
+ 	 * We keep the reference to the task struct even if
+ 	 * the thread dies to avoid that the interrupt code
+@@ -2291,3 +2311,10 @@ int request_any_context_irq(unsigned int irq, irq_handler_t handler,
+ 
+ 	return !can_request_irq(irq, flags) ? -EINVAL : 0;
+ }
++
++/* Infinity Kernel: Touchscreen IRQ thread RT priority */
++module_param_named(ts_irq_priority, ts_irq_priority, int, 0644);
++MODULE_PARM_DESC(ts_irq_priority,
++		 "RT priority for touchscreen IRQ threads (default: 99)");
+--
+2.17.1

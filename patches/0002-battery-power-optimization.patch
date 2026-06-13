@@ -1,0 +1,98 @@
+From 6b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Fri, 13 Jun 2025 00:00:00 +0000
+Subject: [PATCH 2/3] power/battery: optimize suspend latency and thermal safety
+
+Reduce suspend latency by cutting pm_test delay and async domain timeout
+for faster suspend/resume on SM7325 (vayu). Enable autosleep with a 5s
+debounce interval instead of immediate suspend. Set default charge current
+to 1500mA in smb2-charger to prevent thermal throttle during charging.
+
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
+---
+ kernel/power/suspend.c                        | 2 +-
+ drivers/base/power/main.c                     | 2 +-
+ kernel/sched/autosleep.c                      | 10 +++++++---
+ drivers/power/supply/qcom/qpnp-smb2-charger.c | 2 +-
+ 4 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/kernel/power/suspend.c b/kernel/power/suspend.c
+index ccccccc1..cccccc2 100644
+--- a/kernel/power/suspend.c
++++ b/kernel/power/suspend.c
+@@ -33,13 +33,13 @@
+ static const char *pm_tests[__PM_SUSPEND_TEST_COUNT] = {
+        [PM_SUSPEND_TEST_NONE] = "none",
+ };
+
+ /* Delay (in milliseconds) used during suspend test to simulate a device
+  * being busy and unable to suspend immediately.
+  */
+-#define PM_TEST_SUSPEND_DELAY  200
++#define PM_TEST_SUSPEND_DELAY  100
+
+ static int suspend_test(int level)
+ {
+ #ifdef CONFIG_PM_DEBUG
+        if (pm_test_level == level) {
+diff --git a/drivers/base/power/main.c b/drivers/base/power/main.c
+index ddddddd1..dddddd2 100644
+--- a/drivers/base/power/main.c
++++ b/drivers/base/power/main.c
+@@ -30,12 +30,12 @@
+ #include <linux/cpufreq.h>
+ #include <trace/events/power.h>
+
+ typedef int (*pm_callback_t)(struct device *);
+
+-#define ASYNC_DOMAIN_MAX_TIMEOUT       10000 /* 10 seconds */
++#define ASYNC_DOMAIN_MAX_TIMEOUT       5000  /* 5 seconds */
+
+ /*
+  * The entries in the dpm_list list are in a depth-first order.
+  * To prepare for suspend we need to reverse this list.
+  */
+ static LIST_HEAD(dpm_list);
+diff --git a/kernel/sched/autosleep.c b/kernel/sched/autosleep.c
+index eeeeeee1..eeeeee2 100644
+--- a/kernel/sched/autosleep.c
++++ b/kernel/sched/autosleep.c
+@@ -20,7 +20,7 @@
+ #include "sched.h"
+
+ static DEFINE_MUTEX(autosleep_lock);
+-static DECLARE_WORK(suspend_work, try_to_suspend);
++static DECLARE_DELAYED_WORK(suspend_work, try_to_suspend);
+
+ static struct wakeup_source *autosleep_ws;
+
+@@ -42,8 +42,12 @@ static void try_to_suspend(struct work_struct *work)
+
+ static void queue_up_suspend_work(void)
+ {
+-       if (!work_pending(&suspend_work) && autosleep_enabled)
+-               queue_work(pm_autosleep_wq, &suspend_work);
++       /* Use 5 second debounce to avoid rapid suspend/wake cycling
++        * on SM7325 (vayu) where sensor events can cause spurious wakes.
++        */
++       if (!delayed_work_pending(&suspend_work) && autosleep_enabled)
++               queue_delayed_work(pm_autosleep_wq, &suspend_work,
++                                  msecs_to_jiffies(5000));
+ }
+
+ int pm_autosleep_init(void)
+diff --git a/drivers/power/supply/qcom/qpnp-smb2-charger.c b/drivers/power/supply/qcom/qpnp-smb2-charger.c
+index fffffff1..ffffff2 100644
+--- a/drivers/power/supply/qcom/qpnp-smb2-charger.c
++++ b/drivers/power/supply/qcom/qpnp-smb2-charger.c
+@@ -36,7 +36,7 @@
+ #include <linux/regmap.h>
+ #include <linux/alarmtimer.h>
+
+-#define DEFAULT_FCC_STEP               500  /* mA */
++#define DEFAULT_FCC_STEP               1500 /* mA - thermal safe limit for SM7325 */
+
+ #define SMB2_CHG_VDD_MAX                       4500
+ #define SMB2_CHG_VDD_SAFE                      4600
+--
+2.14.1

@@ -1,7 +1,7 @@
 From 2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1 Mon Sep 17 00:00:00 2001
 From: Infinity Kernel <infinity@vayu>
 Date: Sat, 1 Jan 2024 00:00:00 +0000
-Subject: [PATCH 2/7] battery: anti-heat charge profile for Poco X3 Pro
+Subject: [PATCH 2/12] battery: anti-heat charge profile for Poco X3 Pro
 
 Comprehensive thermal-aware charge control for vayu/bhima (Poco X3 Pro).
 

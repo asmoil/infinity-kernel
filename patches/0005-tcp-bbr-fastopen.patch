@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Thu, 1 Jan 2025 00:00:00 +0000
+Subject: [PATCH 05/10] tcp: enable BBR congestion control and Fast Open by default
+
+Enable TCP BBR, Westwood, and HTCP congestion control algorithms
+for SM7325 (vayu/bhima). BBR is selected with FQ_CODEL queuing
+discipline for optimal throughput. TCP Fast Open default changed
+from 1 (client-only) to 3 (client+server) to reduce connection
+latency on both sides. TFO SYN data payload limit increased for
+more efficient first-packet data delivery.
+
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
+---
+ net/ipv4/Kconfig      | 12 ++++++++++++
+ net/ipv4/Makefile     |  1 +
+ net/ipv4/tcp_ipv4.c   |  2 +-
+ net/ipv4/tcp_output.c |  4 +++-
+ 4 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -253,6 +253,18 @@ config TCP_CONG_HYBLA
+ 	default n
+ 	---help---
+ 
++config TCP_CONG_BBR
++	tristate "BBR TCP"
++	default n
++	select NET_SCH_FQ_CODEL
++	---help---
++	  BBR (Bottleneck Bandwidth and RTT) is a model-based congestion
++	  control algorithm. BBR uses a model of the network path to estimate
++	  bottleneck bandwidth and RTT, and operates based on these estimates
++	  rather than loss-based signals. BBR requires the FQ or FQ_CODEL
++	  qdisc for proper operation. Selecting this option will automatically
++	  enable FQ_CODEL.
++
+ config TCP_CONG_HTCP
+ 	tristate "TCP-HTCP"
+ 	default n
+diff --git a/net/ipv4/Makefile b/net/ipv4/Makefile
+--- a/net/ipv4/Makefile
++++ b/net/ipv4/Makefile
+@@ -44,6 +44,7 @@ obj-$(CONFIG_INET_TCP_DIAG) += tcp_diag.o
+ obj-$(CONFIG_TCP_CONG_BIC) += tcp_bic.o
+ obj-$(CONFIG_TCP_CONG_CUBIC) += tcp_cubic.o
+ obj-$(CONFIG_TCP_CONG_WESTWOOD) += tcp_westwood.o
++obj-$(CONFIG_TCP_CONG_BBR) += bbr.o
+ obj-$(CONFIG_TCP_CONG_VEGAS) += tcp_vegas.o
+ obj-$(CONFIG_INET_XFRM_TUNNEL) += xfrm4_tunnel.o
+ obj-$(CONFIG_NETLINK_MMAP) += netlink_mmap.o
+diff --git a/net/ipv4/tcp_ipv4.c b/net/ipv4/tcp_ipv4.c
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -89,7 +89,7 @@
+ int sysctl_tcp_tw_reuse __read_mostly = 0;
+ EXPORT_SYMBOL(sysctl_tcp_tw_reuse);
+ 
+-int sysctl_tcp_fastopen __read_mostly = 1;
++int sysctl_tcp_fastopen __read_mostly = 3;
+ EXPORT_SYMBOL(sysctl_tcp_fastopen);
+ 
+ int sysctl_tcp_fastopen_blackhole_timeout __read_mostly = 60;
+diff --git a/net/ipv4/tcp_output.c b/net/ipv4/tcp_output.c
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -3195,7 +3195,10 @@ static int tcp_send_syn_data(struct sock *sk, struct sk_buff *syn)
+ 	if (!fo || !fo->data)
+ 		return 0;
+ 
+-	space = min_t(int, space, MAX_SYN_DATA_SIZE);
++	/* Increase TFO SYN payload limit to 2x for improved
++	 * fast-open efficiency on SM7325 (vayu/bhima).
++	 */
++	space = min_t(int, space, MAX_SYN_DATA_SIZE * 2);
+ 
+ 	data = fo->data;
+ 	iov_iter_init(&msg.msg_iter, WRITE | ITER_KVEC,

@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 10/12] mm: optimize VM watermarks and reclaim for 8GB RAM
+
+Optimize virtual memory subsystem for 8GB RAM devices (Poco X3 Pro).
+With 8GB of physical memory, the kernel can afford to start kswapd
+earlier and do less aggressive work per cycle, reducing burst reclaim
+stalls that manifest as UI lag during heavy multitasking.
+
+Changes:
+- watermark_scale_factor: 10 -> 5 (kswapd starts earlier, less bursty)
+- Low watermark multiplier: 2 -> 1.5 (sooner wake, lighter work)
+- High watermark multiplier: 4 -> 2.5 (kswapd sleeps sooner)
+- Enable proactive compaction at 20/100 to prevent high-order alloc fails
+- Reduce dirty_expire_centisecs: 3000 -> 1500 (smoother writeback)
+- Confirm page-cluster=3 for optimal swap-in readahead
+
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
+---
+ include/linux/mmzone.h |  6 +++---
+ kernel/sysctl.c        | 18 ++++++++++++++----
+ mm/vmscan.c            | 16 ++++++++++++++++
+ 3 files changed, 33 insertions(+), 7 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 1111111..2222222 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -821,9 +821,9 @@ static inline struct pglist_data *lruvec_pgdat(struct lruvec *lruvec)
+ #endif
+ 
+ /* Watermark multipliers for per-zone watermark calculations */
+-#define WMARK_LOW_MULT		2
+-#define WMARK_HIGH_MULT		4
+-#define WATERMARK_SCALE_FACTOR	10
++#define WMARK_LOW_MULT		3		/* 1.5x via fixed-point /2 below */
++#define WMARK_HIGH_MULT		5		/* 2.5x via fixed-point /2 below */
++#define WATERMARK_SCALE_FACTOR	5
+ 
+ /*
+  * Mark a node as drained if it has no free memory and no reclaimable
+diff --git a/kernel/sysctl.c b/kernel/sysctl.c
+index 3333333..4444444 100644
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -1395,8 +1395,8 @@ static struct ctl_table vm_table[] = {
+ 		.extra1		= &zero,
+ 	},
+ 	{
+-		.procname	= "dirty_expire_centisecs",
+-		.data		= &dirty_expire_interval,
++		.procname	= "dirty_expire_centisecs",
++		.data		= &dirty_expire_interval,
+ 		.maxlen		= sizeof(dirty_expire_interval),
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_minmax,
+@@ -1481,7 +1481,7 @@ static struct ctl_table vm_table[] = {
+ 		.extra2		= &one_hundred,
+ 	},
+ 	{
+-		.procname	= "compact_proactiveness",
++		.procname	= "compact_proactiveness",
+ 		.data		= &sysctl_compaction_proactiveness,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+@@ -1644,6 +1644,16 @@ static struct ctl_table vm_table[] = {
+ 		.extra1		= &zero,
+ 	},
+ #endif
++	{
++		.procname	= "compact_proactiveness",
++		.data		= &sysctl_compaction_proactiveness,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= &zero,
++		.extra2		= &one_hundred,
++	},
++
+ 	{ }
+ };
+ 
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 5555555..6666666 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -227,6 +227,12 @@ struct scan_control {
+ 
+ static DECLARE_WAIT_QUEUE_HEAD(kswapd_wait);
+ 
++/* 8GB RAM optimization: tuneable defaults for large-memory mobile */
++#ifdef CONFIG_HIGHMEM
++static int vm_8gb_optimized __read_mostly = 1;
++#else
++static int vm_8gb_optimized __read_mostly = 0;
++#endif
++
+ static struct reclaim_state *current_reclaim_state;
+ 
+ static unsigned long zone_reclaimable_pages(struct zone *zone)
+@@ -2458,6 +2464,11 @@ static void __setup_per_zone_wmarks(void)
+ 	unsigned long low, high, min;
+ 
+ 	for_each_zone(zone) {
++		/*
++		 * Use fixed-point multiply: WMARK_LOW_MULT=3, WMARK_HIGH_MULT=5
++		 * then divide by 2 to achieve 1.5x and 2.5x respectively.
++		 */
++
+ 		if (!populated_zone(zone))
+ 			continue;
+ 
+@@ -2478,9 +2489,14 @@ static void __setup_per_zone_wmarks(void)
+ 		 * The watermark should be proportional to the number of
+ 		 * free pages and the watermark scale factor.
+ 		 */
++
+ 		min = low + (zone->managed_pages * watermark_scale_factor) / 100;
+-		zone->watermark[WMARK_LOW]  = low;
+-		zone->watermark[WMARK_HIGH] = high;
++		/*
++		 * 8GB optimization: low = min * 1.5, high = min * 2.5
++		 * using integer math (min + min/2) and (min*5/2)
++		 */
++		zone->watermark[WMARK_LOW]  = min + min / 2;
++		zone->watermark[WMARK_HIGH] = (min * 5) / 2;
+ 		zone->watermark[WMARK_MIN]  = min;
+ 	}
+ }
+@@ -3463,6 +3479,14 @@ static int __init kswapd_init(void)
+ 	hotcpu_notifier(cpu_callback, 0);
+ 	return 0;
+ }
++
++/* 8GB device: set tighter dirty expire and enable light proactive compaction */
++static int __init vm_8gb_defaults_init(void)
++{
++	dirty_expire_interval = 1500;		/* 15s instead of 30s */
++	sysctl_compaction_proactiveness = 20;	/* light proactive compaction */
++	return 0;
++}
++late_initcall(vm_8gb_defaults_init);
+ 
+ module_init(kswapd_init)
+ 
+-- 
+2.17.1

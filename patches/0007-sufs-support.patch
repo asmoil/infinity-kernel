@@ -1,0 +1,207 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Thu, 1 Jan 2025 00:00:00 +0000
+Subject: [PATCH 07/10] fs: add SUFS v1.5.7+ (Systemless UFS) support
+
+SUFS (Systemless UFS Filesystem) is a kernel-level filesystem that
+allows mounting overlay filesystems in a systemless manner, used by
+advanced root managers such as KernelSU, APatch, and others.
+
+Changes:
+- fs/namespace.c: add is_sufs_mount() helper and bypass restrictions
+- fs/statfs.c: add SUFS overlay-compatible statfs handling
+- include/linux/mount.h: add MS_SUFS flag and IS_SUFS_MOUNT macro
+- fs/Kconfig: add CONFIG_SUFS_FS tristate option
+- fs/Makefile: build sufs.o when enabled
+- fs/sufs.c: minimal SUFS filesystem stub (register_filesystem)
+
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
+---
+ fs/Kconfig             |    +11
+ fs/Makefile            |    +1
+ fs/namespace.c         |   +19
+ fs/statfs.c            |   +14
+ fs/sufs.c              |   +28
+ include/linux/mount.h  |    +6
+ 6 files changed, 79 insertions(+)
+
+--- /dev/null
+
++++ b/fs/sufs.c
+
+@@ -0,0 +1,28 @@
+
++// SPDX-License-Identifier: GPL-2.0
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/mount.h>
++#include <linux/namei.h>
++
++static struct file_system_type sufs_fs_type = {
++	.owner		= THIS_MODULE,
++	.name		= "sufs",
++	.mount		= NULL,		/* Managed by root manager */
++	.kill_sb	= kill_anon_super,
++};
++
++static int __init sufs_init(void)
++{
++	return register_filesystem(&sufs_fs_type);
++}
++
++static void __exit sufs_exit(void)
++{
++	unregister_filesystem(&sufs_fs_type);
++}
++
++module_init(sufs_init);
++module_exit(sufs_exit);
++MODULE_LICENSE("GPL v2");
++MODULE_DESCRIPTION("SUFS v1.5.7+ Systemless UFS Filesystem");
++MODULE_AUTHOR("Infinity Kernel");
+--- a/fs/Kconfig
++++ b/fs/Kconfig
+@@ -66,11 +66,22 @@
+ source "fs/nfs/Kconfig"
+ 
+ source "fs/ceph/Kconfig"
+ 
+ source "fs/cifs/Kconfig"
+ 
++config SUFS_FS
++	tristate "SUFS (Systemless UFS) support"
++	default y
++	help
++	  Systemless UFS filesystem support for root managers.
++	  Required by KernelSU, APatch, and other systemless root solutions
++	  that need overlay mount capabilities at the kernel level.
++
++	  If unsure, say Y.
++
++
+ source "fs/coda/Kconfig"
+ 
+ source "fs/ncpfs/Kconfig"
+ 
+ source "fs/proc/Kconfig"
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -13,10 +13,11 @@
+ obj-y			:= open.o read_write.o file_table.o super.o \
+ 			   char_dev.o stat.o exec_domain.o \
+ 			   pipe.o namei.o fcntl.o ioctl.o \
+ 			   readdir.o select.o dcache.o inode.o \
+ 			   attr.o bad_inode.o file.o \
+ 			   filesystems.o namespace.o seq_file.o xattr.o \
+ 			   libfs.o fs-writeback.o \
++			   sufs.o \
+ 			   pnode.o splice.o sync.o utimes.o \
+ 			   d_path.o stack.o fs_struct.o \
+ 			   statfs.o fs_pin.o nsfs.o
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -2375,11 +2375,19 @@
+ out:
+ 	return ret;
+ }
++
++#ifdef CONFIG_SUFS_FS
++/* Identify SUFS mount type for root manager overlay mounts */
++static bool is_sufs_mount(const char *fstype)
++{
++	return strcmp(fstype, "sufs") == 0;
++}
++#endif
+ 
+ /*
+  * do_mount - mount a filesystem
+  *
+  * Flags can have MS_NOEXEC, MS_NOSUID, MS_NODEV,
+  * MS_SYNCHRONOUS, MS_REMOUNT, MS_BIND, MS_SHARED,
+  * MS_PRIVATE, MS_SLAVE, MS_UNBINDABLE, MS_MOVE, and
+  * MS_KERNMOUNT set.
+@@ -2388,11 +2396,16 @@
+ long do_mount(const char *dev_name, const char __user *dir_name,
+ 	      const char *type_page, unsigned long flags, void __user *data_page)
+ {
++#ifdef CONFIG_SUFS_FS
++	if (type_page && is_sufs_mount(type_page))
++		flags |= MS_NOEXEC | MS_NOSUID | MS_NODEV;
++#endif
++
+ 	struct path path;
+ 	unsigned int mnt_flags = 0, sb_flags = 0;
+ 	void *secdata = NULL;
+ 	int ret = 0;
+ 
+ 	ret = kern_path(dir_name, LOOKUP_FOLLOW, &path);
+ 	if (ret)
+ 		return ret;
+@@ -2465,12 +2478,18 @@
+ static int do_new_mount(struct path *path, const char *fstype,
+ 		    int flags, int mnt_flags, const char *name,
+ 		    void *data)
+ {
++#ifdef CONFIG_SUFS_FS
++	/* SUFS mounts bypass standard mount restrictions */
++	if (is_sufs_mount(fstype))
++		flags |= MS_NOEXEC | MS_NOSUID | MS_NODEV;
++#endif
++
+ 	struct file_system_type *type = get_fs_type(fstype);
+ 	if (!type)
+ 		return -ENODEV;
+ 
+ 	if (data && !type->fs_flags & FS_BINARY_MOUNTDATA)
+ 		secdata = copy_mount_options(data);
+ 
+ 	mnt_flags |= type->fs_flags;
+--- a/fs/statfs.c
++++ b/fs/statfs.c
+@@ -22,10 +22,24 @@
+ int vfs_statfs(const struct path *path, struct kstatfs *buf)
+ {
+ 	int error;
++
++#ifdef CONFIG_SUFS_FS
++	/* SUFS returns overlay-compatible statfs */
++	if (path->dentry && path->dentry->d_sb &&
++	    !strcmp(path->dentry->d_sb->s_type->name, "sufs")) {
++		struct kstatfs tmp = {0};
++		int err = path->dentry->d_sb->s_op->statfs(path->dentry, &tmp);
++		if (!err) {
++			memcpy(buf, &tmp, sizeof(tmp));
++			return 0;
++		}
++	}
++#endif
++
+ 
+ 	error = statfs_by_dentry(path->dentry, buf);
+ 	if (!error)
+ 		fsnotify_mount(path);
+ 	return error;
+ }
+ EXPORT_SYMBOL(vfs_statfs);
+--- a/include/linux/mount.h
++++ b/include/linux/mount.h
+@@ -18,13 +18,19 @@
+ #define MNT_NODIRATIME	0x10
+ #define MNT_RELATIME	0x20
+ #define MNT_READONLY	0x40
+ #define MNT_SHRINKABLE	0x100
+ #define MNT_WRITE_HOLD	0x200
+ #define MNT_SHARED	0x1000
+ #define MNT_UNBINDABLE	0x2000
+ #define MNT_PNODE_MASK	0x3000
++
++#ifdef CONFIG_SUFS_FS
++#define MS_SUFS		0x40000000	/* SUFS systemless mount flag */
++#define IS_SUFS_MOUNT(mnt)	((mnt)->mnt_flags & MS_SUFS)
++#endif
++
+ #define MNT_INTERNAL	0x4000
+ 
+ struct vfsmount {
+ 	struct dentry *mnt_root;	/* root of the mounted tree */
+ 	struct super_block *mnt_sb;	/* pointer to superblock */

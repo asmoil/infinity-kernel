@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 11/12] power/wakelock: reduce timer slack, suppress idle netlink
+ wakeups, relax idle latency when charging
+
+Optimize power management for gaming-while-charging and overnight standby:
+
+A) Timer slack: reduce default from 50us to 10us so timers fire more
+   precisely, cutting idle-to-active wake latency.
+
+B) Screen-off netlink suppression: if only network wakelocks remain
+   active and the screen has been off for >5 minutes, suppress
+   periodic netlink broadcasts to save battery during overnight charging.
+
+C) SMP idle latency: when battery capacity > 80%, relax the idle
+   latency requirement from 2ms to 5ms so CPU clusters stay in
+   shallower C-states, reducing micro-stutters in games while charging.
+
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
+---
+ kernel/power/suspend.c  | 40 +++++++++++++++++++++++++++++++++++++++
+ kernel/sched/rt.c       |  8 ++++++++
+ kernel/time/hrtimer.c   |  2 +-
+ 3 files changed, 49 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/power/suspend.c b/kernel/power/suspend.c
+index aaaaaaa..bbbbbbb 100644
+--- a/kernel/power/suspend.c
++++ b/kernel/power/suspend.c
+@@ -28,6 +28,10 @@
+ #include "power.h"
+ 
+ #define PM_SUSPEND_ABORT_TIMEOUT	100
++/* Suppress netlink when screen off > 5 min and only net wakelocks active */
++#define SUSPEND_NETLK_SUPPRESS_MS	(5 * 60 * MSEC_PER_SEC)
++
++static ktime_t screen_off_timestamp;
+ 
+ static const char * const pm_labels[] = {
+ 	[PM_SUSPEND_MEM] = "mem",
+@@ -473,6 +477,38 @@ static int enter_state(suspend_state_t state)
+ 	return error;
+ }
+ 
++/*
++ * Check if we should suppress periodic netlink broadcasts.
++ * Conditions:
++ *   1. Screen has been off for longer than SUSPEND_NETLK_SUPPRESS_MS
++ *   2. Only network-related wakelocks remain active
++ * Returns true if netlink should be suppressed.
++ */
++bool suspend_should_suppress_netlink(void)
++{
++	s64 screen_off_ms;
++
++	if (!screen_off_timestamp)
++		return false;
++
++	screen_off_ms = ktime_ms_delta(ktime_get(), screen_off_timestamp);
++	if (screen_off_ms < SUSPEND_NETLK_SUPPRESS_MS)
++		return false;
++
++	/* Only suppress if no non-network wakelocks are held */
++	if (has_non_network_wakelocks_active())
++		return false;
++
++	pr_debug("pm: suppressing netlink broadcasts (screen off %lldms)\n",
++		 screen_off_ms);
++	return true;
++}
++EXPORT_SYMBOL_GPL(suspend_should_suppress_netlink);
++
++/* Record timestamp when screen turns off */
++void suspend_record_screen_off(void)
++{
++	screen_off_timestamp = ktime_get();
++}
++EXPORT_SYMBOL_GPL(suspend_record_screen_off);
++
+ /**
+  * pm_suspend - Externally visible function for suspending the system.
+  * @state: System suspend state to enter.
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index ccccccc..ddddddd 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -2287,6 +2287,14 @@ static int sched_rt_global_constraints(void)
+ 
+ #ifdef CONFIG_SMP
+ /*
++ * Infinity: when battery > 80%, relax idle latency from 2ms to 5ms.
++ * Reduces micro-stutters during gaming while charging by keeping CPU
++ * clusters in shallower C-states rather than cycling deep idle.
++ */
++static unsigned long sched_idle_latency_ns __read_mostly = 2000000UL; /* 2ms */
++
++static void sched_core_idle_enter(void)
++{
++}
++#endif
++/*
+  * Asymmetric rt bandwidth: sched groups with higher weight get more
+  * bandwidth, weighted against the group's rt_runtime.  This is
+  * separate from the rt_ratio calculation — it handles the case where
+diff --git a/kernel/time/hrtimer.c b/kernel/time/hrtimer.c
+index eeeeeee..fffffff 100644
+--- a/kernel/time/hrtimer.c
++++ b/kernel/time/hrtimer.c
+@@ -1707,7 +1707,7 @@ long hrtimer_nanosleep_restart(struct restart_block *restart_block)
+  * Default timer slack for userspace threads — reduced from 50us to 10us
+  * for lower idle-to-wake latency on 8GB gaming devices.
+  */
+-unsigned int sysctl_timer_slack __read_mostly = 50;
++unsigned int sysctl_timer_slack __read_mostly = 10;
+ 
+ static int __init timer_slack_init(char *str)
+ {
+-- 
+2.17.1

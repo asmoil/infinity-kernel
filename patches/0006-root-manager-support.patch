@@ -1,279 +1,124 @@
-From 6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f Mon Sep 17 00:00:00 2001
-From: Infinity Kernel <infinity@vayu>
-Date: Sat, 1 Jan 2024 00:00:00 +0000
-Subject: [PATCH 6/6] module: weaken signature enforcement for all root managers
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Thu, 1 Jan 2025 00:00:00 +0000
+Subject: [PATCH 06/10] module: root manager support (KernelSU, KSU Next,
+ Magisk, APatch, ReSukiSu, SukiSU Ultra)
 
-Full compatibility with: KernelSU, KernelSU Next, Magisk, APatch,
-ReSukiSu, and SukiSU Ultra.
+Add module allowlist that bypasses signature verification and vermagic
+checks for known root manager kernel modules:
+  - KernelSU / KernelSU Next
+  - Magisk
+  - APatch / KP (kernel patch)
+  - ReSukiSu / SukiSU Ultra
 
-- Disable module signature enforcement at load time for allowlisted modules
-- Add module_load_allow list for whitelisted modules via kernel param
-- Auto-allow known root manager module names (kernelsu, ksud, apatch,
-  resukisu, sukisu, and all their prefixed variants)
-- Skip version magic (vermagic) check for allowlisted modules
-- Ensure kallsyms_lookup_name is fully exported via EXPORT_SYMBOL_GPL
-- Add /proc/root_manager_status for runtime diagnostics
-- Ensure kprobes, uprobes, ftrace are available for module injection
+Also export kallsyms_lookup_name which is required by KernelSU and
+APatch for internal kernel symbol resolution.
 
-This patch is required for modern Android root solutions that inject
-kernel modules at runtime. Stock enforcement prevents their .ko modules
-from loading, breaking su functionality entirely.
+Changes:
+- kernel/module.c: add module_is_allowlisted() helper
+- kernel/module.c: bypass module_sig_check() for allowlisted modules
+- kernel/module.c: bypass check_modinfo() vermagic for allowlisted modules
+- kernel/kallsyms.c: export kallsyms_lookup_name via EXPORT_SYMBOL_GPL
 
-Security note: This intentionally weakens kernel module security.
-Only use this on personal devices where you accept the risk of
-arbitrary kernel code execution via module loading.
-
-Signed-off-by: Infinity Kernel <infinity@vayu>
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
 ---
- kernel/kallsyms.c | 32 ++++++++++++++++++++++++++------
- kernel/module.c   | 88 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 113 insertions(+), 7 deletions(-)
+ kernel/kallsyms.c |    +1
+ kernel/module.c   |   +38
+ 2 files changed, 39 insertions(+), 0 deletions(-)
 
-diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
-index cdef012..3456789 100644
---- a/kernel/kallsyms.c
-+++ b/kernel/kallsyms.c
-@@ -61,12 +61,15 @@
-  * These will be relocations in the kernel image.
-  */
- 
--/*
-- * This is set by the linker at link time to point to the
-- * end of the kernel symbol table.
-- * Exported for module use.
-+/*
-+ * Infinity Kernel: Ensure kallsyms data is fully accessible.
-+ *
-+ * CONFIG_KALLSYMS_ALL=y exposes ALL kernel symbols (not just
-+ * text symbols) to /proc/kallsyms. KernelSU, KernelSU Next,
-+ * APatch, ReSukiSu, SukiSU Ultra, and Magisk (indirectly via
-+ * modules) rely on kallsyms_lookup_name() to find internal
-+ * kernel functions at runtime. The symbols are needed to:
-+ *   1. Hook sys_call_table for su implementation
-+ *   2. Find security operations for permission management
-+ *   3. Patch kernel functions for feature injection
-+ *   4. Locate cred/task_struct for UID-based root grants
-+ *
-+ * The KALLSYMS_ALL functionality is force-enabled here regardless
-+ * of the .config setting.
-  */
--extern const unsigned long kallsyms_addresses[] __weak;
--extern const int kallsyms_num_syms __weak;
- extern const u8 kallsyms_names[] __weak;
-@@ -162,7 +165,7 @@ static unsigned long get_symbol_pos(unsigned long addr,
- 
- /* Look up a kernel symbol and return it in a text buffer. */
- static int __sprint_symbol(char *buffer, unsigned long address,
--                          int symbol_offset, int add_offset)
-+                          int symbol_offset, int add_offset)
- {
-        char *modname;
-        const char *name;
-@@ -443,6 +446,21 @@ int kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *,
-        return module_kallsyms_on_each_symbol(fn, data);
- }
- 
-+/*
-+ * Infinity Kernel: Force-export kallsyms_lookup_name for root managers.
-+ *
-+ * KernelSU, KernelSU Next, APatch, ReSukiSu, and SukiSU Ultra all
-+ * need this symbol to locate internal kernel functions at runtime.
-+ * Magisk does not directly need it (it works in userspace), but
-+ * Magisk modules that interact with kernel symbols do.
-+ *
-+ * On some builds (with CONFIG_KALLSYMS=n or restrictive exports),
-+ * this symbol may not be available. We explicitly export it here.
-+ *
-+ * Additionally, export sprint_symbol and sprint_symbol_no_offset
-+ * which some root manager modules use for diagnostic logging.
-+ */
-+EXPORT_SYMBOL_GPL(kallsyms_lookup_name);
-+EXPORT_SYMBOL_GPL(sprint_symbol);
-+EXPORT_SYMBOL_GPL(sprint_symbol_no_offset);
-+
- #endif /* CONFIG_KALLSYMS */
- 
- /* Asm/paravirt alternative entry points need these */
-diff --git a/kernel/module.c b/kernel/module.c
-index 2345670..abcdef9 100644
 --- a/kernel/module.c
 +++ b/kernel/module.c
-@@ -53,6 +53,27 @@
- #include <linux/audit.h>
- #include <uapi/linux/module.h>
+@@ -68,15 +68,42 @@
+ EXPORT_SYMBOL_GPL(module_mutex);
+ static LIST_HEAD(modules);
  
-+/*
-+ * Infinity Kernel: Module loading allowlist for root managers.
-+ *
-+ * Supported root managers (all auto-detected, no config needed):
-+ *   - KernelSU       (module: kernelsu, kernelsu_*           - by tiann)
-+ *   - KernelSU Next   (module: kernelsu, kernelsu_*           - by us18n)
-+ *   - Magisk          (module: magisk, magisk_*               - by topjohnwu)
-+ *   - APatch          (module: apatch, apatch_, kp            - by bmax121)
-+ *   - ReSukiSu        (module: resukisu, re_sukisu, resukisu_* - KSU fork)
-+ *   - SukiSU Ultra    (module: sukisu, sukisu_ultra, sukisu_*  - KSU fork)
-+ *
-+ * Modules in this list bypass signature and version checks.
-+ * This is required because root managers build their .ko modules
-+ * independently of the kernel tree, so:
-+ *   1. The module has no valid kernel signing key signature
-+ *   2. The vermagic string may not match the running kernel
-+ *   3. The module layout may differ from in-tree expectations
-+ *
-+ * The allowlist is checked BEFORE the generic rejection path,
-+ * so whitelisted modules load cleanly without any errors.
-+ */
-+
-+#define MAX_ALLOWLIST_ENTRIES  32
-+
-+static char *module_load_allow[MAX_ALLOWLIST_ENTRIES];
-+static int module_load_allow_count;
-+module_param_array_named(module_load_allow, module_load_allow,
-+                        charp, &module_load_allow_count, 0644);
-+MODULE_PARM_DESC(module_load_allow,
-+       "Comma-separated list of module names allowed to load without "
-+       "signature or version checks (for root managers)");
-+
-+/*
-+ * Infinity Kernel: Check if a module name is in the allowlist.
-+ * Returns 1 if allowed, 0 otherwise.
-+ *
-+ * First checks the user-specified module_load_allow list, then
-+ * falls through to the built-in auto-detection list for known
-+ * root manager module names.
-+ */
-+static int module_is_allowlisted(const char *name)
+ #ifdef CONFIG_KGDB_KDB
+ struct list_head *kdb_modules = &modules;
+ EXPORT_SYMBOL_GPL(kdb_modules);
+ #endif
+ 
++/* Root manager module allowlist - bypass sig/vermagic checks */
++static bool module_is_allowlisted(const char *name)
 +{
-+       int i;
++	static const char * const allowed_modules[] = {
++		"kernelsu",		/* KernelSU */
++		"kernelsu_next",	/* KernelSU Next */
++		"magisk",		/* Magisk */
++		"apatch",		/* APatch */
++		"kp",			/* APatch kernel patch */
++		"resukisu",		/* ReSukiSu */
++		"sukisu_ultra",		/* SukiSU Ultra */
++		NULL
++	};
++	int i;
 +
-+       if (!name)
-+               return 0;
++	if (!name)
++		return false;
 +
-+       /* Check user-specified allowlist (kernel cmdline param) */
-+       for (i = 0; i < module_load_allow_count; i++) {
-+               if (module_load_allow[i] &&
-+                   !strcmp(module_load_allow[i], name))
-+                       return 1;
-+       }
++	for (i = 0; allowed_modules[i]; i++) {
++		if (strstr(name, allowed_modules[i]))
++			return true;
++	}
 +
-+       /* === KernelSU (original by tiann) === */
-+       if (!strcmp(name, "kernelsu") ||
-+           !strncmp(name, "kernelsu_", 9))
-+               return 1;
-+
-+       /* === KernelSU Next (fork by us18n) ===
-+        * Uses same module naming as KernelSU but with next-specific
-+        * ksud binary. Module names also match kernelsu_* prefix.
-+        * Already covered above; this is explicit documentation. */
-+
-+       /* === APatch (by bmax121) ===
-+        * APatch kernel patch module is loaded as "apatch" or
-+        * with the "apatch_" prefix. The kernel patch driver
-+        * module uses "kp" as an alias. */
-+       if (!strcmp(name, "apatch") ||
-+           !strncmp(name, "apatch_", 7) ||
-+           !strcmp(name, "kp"))
-+               return 1;
-+
-+       /* === Magisk (by topjohnwu) ===
-+        * Magisk itself does not load kernel modules (it works
-+        * entirely in userspace). However, some Magisk modules
-+        * that provide kernel-level features may load .ko files.
-+        * We allowlist "magisk" prefix for forward compatibility. */
-+       if (!strcmp(name, "magisk") ||
-+           !strncmp(name, "magisk_", 7))
-+               return 1;
-+
-+       /* === ReSukiSu (KernelSU fork) ===
-+        * Uses KernelSU-compatible module structure.
-+        * Module names: resukisu, re_sukisu, resukisu_* */
-+       if (!strcmp(name, "resukisu") ||
-+           !strcmp(name, "re_sukisu") ||
-+           !strncmp(name, "resukisu_", 9))
-+               return 1;
-+
-+       /* === SukiSU Ultra (KernelSU fork) ===
-+        * Uses KernelSU-compatible module structure.
-+        * Module names: sukisu, sukisu_ultra, sukisu_* */
-+       if (!strcmp(name, "sukisu") ||
-+           !strcmp(name, "sukisu_ultra") ||
-+           !strncmp(name, "sukisu_", 7))
-+               return 1;
-+
-+       return 0;
++	return false;
 +}
 +
- /*
-  * Mutex protects module list (mod_list), module_text_addr, etc.
-  * Held by load_module, unload_module, and module_mutex_for_const.
-@@ -2799,6 +2828,15 @@ static int module_sig_check(struct load_info *info, int flags)
-  */
++
+ #ifdef CONFIG_MODULES_TREE_LOOKUP
+ static BLOCKING_NOTIFIER_HEAD(module_notify_list);
+ #endif
+ 
+ /* Block module loading/unloading? */
+ int modules_disabled = 0;
+ core_param(nomodules, modules_disabled, bint, 0);
+@@ -2088,12 +2115,16 @@
+ static int check_modinfo(struct module *mod,
+ 			  struct load_info *info, int flags)
+ {
+ 	const char *modname = get_modinfo(info, "name");
++
++	/* Skip vermagic check for root manager modules */
++	if (module_is_allowlisted(get_modinfo(info, "name")))
++		return 0;
+ 
+ 	if (flags & MODULE_INIT_IGNORE_VERMAGIC)
+ 		modname = NULL;
+ 
+ 	if (modname) {
+ 		if (!have_modern_vermagic(modname)) {
+ 			pr_warn("%s: module magic version '%s' should be %s\n",
+ 				mod->name, modname, VERMAGIC_STRING);
+@@ -2370,11 +2401,18 @@
  static int module_sig_check(struct load_info *info, int flags)
  {
-+       /*
-+        * Infinity Kernel: Skip signature enforcement for allowlisted modules.
-+        *
-+        * Root managers (KernelSU, KSU Next, APatch, ReSukiSu, SukiSU Ultra)
-+        * cannot sign their modules with the kernel's private key, so we
-+        * must bypass this check for them. Magisk does not load kernel
-+        * modules but we keep the allowlist path open for Magisk modules.
-+        */
-+       if (module_is_allowlisted(info->name)) {
-+               pr_notice("infinity: module %s: signature check bypassed "
-+                         "(root manager module)\n", info->name);
-+               return 0;
-+       }
+ 	int err = -ENOMODULE;
 +
- #ifdef CONFIG_MODULE_SIG
-        if (fsize <= info->len - sizeof(*(info->sig)) &&
-            memcmp(info->sig, module_signature_string,
-@@ -2878,6 +2916,18 @@ static int layout_and_allocate(struct load_info *info, int flags)
- static int check_modinfo(struct module *mod, struct load_info *info, int flags)
- {
-        const char *modmagic = get_modinfo(info, "vermagic");
-+       /*
-+        * Infinity Kernel: Skip vermagic check for allowlisted modules.
-+        *
-+        * Root manager modules are built out-of-tree and their vermagic
-+        * will not match the kernel's CONFIG_LOCALVERSION ("-InfinityKernel").
-+        * Skipping the check is safe because these modules use:
-+        *   - Fixed-offset hooks (version-independent)
-+        *   - kallsyms_lookup_name for dynamic symbol resolution
-+        *   - kprobes/ftrace for function interception
-+        * None of these depend on vermagic being correct.
-+        */
-+       if (module_is_allowlisted(info->name)) {
-+               pr_notice("infinity: module %s: vermagic check bypassed "
-+                         "(root manager module)\n", info->name);
-+               return 0;
-+       }
-        int err;
++	/* Bypass signature check for root manager modules */
++	{
++		const char *modname = get_modinfo(info, "name");
++		if (modname && module_is_allowlisted(modname))
++			return 0;
++	}
  
-        if (flags & MODULE_INIT_IGNORE_VERMAGIC)
-@@ -3469,6 +3519,23 @@ static int load_module(struct load_info *info, const char __user *uargs,
-        struct module *mod;
-        long err = 0;
+ 	const unsigned long marker[2] = {MODULE_SIG_STRING, MODULE_SIG_STRING};
+ 	const void *mod = info->hdr;
+ 	const void *sig = mod + info->len - marker_size(sizeof(marker));
  
-+       /*
-+        * Infinity Kernel: Notify when an allowlisted (root manager) module
-+        * is being loaded. This aids debugging when a root manager fails to
-+        * inject its module. The log includes module name and size so users
-+        * can verify the correct module was loaded.
-+        */
-+       if (module_is_allowlisted(info->name)) {
-+               pr_info("infinity: loading root manager module '%s' "
-+                       "(%lu bytes) - signature and vermagic checks bypassed\n",
-+                       info->name, info->len);
-+       }
-+
-+       /*
-+        * Infinity Kernel: For APatch, the kernel patch is applied via
-+        * /proc/apatch or kallsyms rather than module loading. But if
-+        * APatch does use a kernel module, ensure it can load cleanly.
-+        */
-+
-        /* Force all modules to be signed if we're in secure boot mode. */
-        if (secure_boot() && !module_sig_ok(info)) {
-                /*
--- 
-2.17.1
+ 	if (info->len <= marker_size(sizeof(marker)))
+ 		return 0;
+ 
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -158,11 +158,12 @@
+ 		addr = kallsyms_sym_address(i);
+ 		if (strcmp(kallsyms_names[i], name) == 0)
+ 			return addr;
+ 	}
+ 
+ 	return module_kallsyms_lookup_name(name);
+ }
+ 
++EXPORT_SYMBOL_GPL(kallsyms_lookup_name);
+ static unsigned long kallsyms_lookup_size_offset(unsigned long addr,
+ 						  unsigned long *symbolsize,
+ 						  unsigned long *offset)

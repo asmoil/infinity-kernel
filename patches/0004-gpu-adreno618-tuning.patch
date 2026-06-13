@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Thu, 1 Jan 2025 00:00:00 +0000
+Subject: [PATCH 04/10] gpu: adreno618: tuning optimizations for SM7325
+
+Optimize KGSL for Adreno 618 on SM7325 (vayu/bhima):
+- Raise devfreq up_threshold from 80% to 90% to prevent
+  unnecessary GPU frequency jumps and save battery
+- Increase thermal throttle threshold from 45C to 50C
+  to allow GPU to sustain higher clocks longer
+- Improve TLB flush efficiency by reducing sleep delays and timeout
+- Add gpu_max_freq sysfs node for runtime max frequency control
+  via devfreq governor
+
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
+---
+ drivers/gpu/msm/kgsl.c        |  2 +-
+ drivers/gpu/msm/kgsl_device.c | 42 ++++++++++++++++++++++++++++++++++++++++++
+ drivers/gpu/msm/kgsl_mmu.c    |  6 +++---
+ 3 files changed, 48 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/msm/kgsl.c b/drivers/gpu/msm/kgsl.c
+--- a/drivers/gpu/msm/kgsl.c
++++ b/drivers/gpu/msm/kgsl.c
+@@ -54,7 +54,7 @@ static void kgsl_devfreq_work(struct work_struct *work)
+ 
+ static struct devfreq_simple_ondemand_data kgsl_ondemand_gov_data = {
+	/* Inactivity threshold to raise the frequency */
+-	.upthreshold = 80,
++	.upthreshold = 90,
+	/* inactivity threshold to lower the frequency */
+	.downdifferential = 20,
+ };
+@@ -135,7 +135,7 @@ static int kgsl_devfreq_get_cur_freq(struct device *dev,
+	return 0;
+ }
+ 
+-#define KGSL_THERMAL_THROTTLE_TEMP	45000
++#define KGSL_THERMAL_THROTTLE_TEMP	50000
+ 
+ static void kgsl_pwrctrl_irq(struct kgsl_device *device, int hw_fault)
+ {
+diff --git a/drivers/gpu/msm/kgsl_device.c b/drivers/gpu/msm/kgsl_device.c
+--- a/drivers/gpu/msm/kgsl_device.c
++++ b/drivers/gpu/msm/kgsl_device.c
+@@ -1145,6 +1145,47 @@ static ssize_t gpu_busy_show(struct device *dev,
+ }
+ static DEVICE_ATTR(gpu_busy, 0444, gpu_busy_show, NULL);
+ 
++/*
++ * gpu_max_freq - Read/write the maximum GPU clock frequency.
++ * Writing a value caps the devfreq governor's max frequency,
++ * useful for battery saving or manual thermal control on SM7325.
++ */
++static ssize_t gpu_max_freq_show(struct device *dev,
++	struct device_attribute *attr, char *buf)
++{
++	struct kgsl_device *device = dev_get_drvdata(dev);
++	unsigned long max_freq = 0;
++
++	if (device && device->devfreq)
++		max_freq = device->devfreq->max_freq;
++
++	return snprintf(buf, PAGE_SIZE, "%lu\n", max_freq);
++}
++
++static ssize_t gpu_max_freq_store(struct device *dev,
++	struct device_attribute *attr, const char *buf, size_t count)
++{
++	struct kgsl_device *device = dev_get_drvdata(dev);
++	unsigned long val;
++	int ret;
++
++	if (!device || !device->devfreq)
++		return -ENODEV;
++
++	ret = kstrtoul(buf, 0, &val);
++	if (ret)
++		return ret;
++
++	mutex_lock(&device->mutex);
++	device->devfreq->max_freq = val;
++	mutex_unlock(&device->mutex);
++
++	update_devfreq(device->devfreq);
++	return count;
++}
++static DEVICE_ATTR(gpu_max_freq, 0644,
++	gpu_max_freq_show, gpu_max_freq_store);
++
+ static ssize_t max_gpuclk_show(struct device *dev,
+ 	struct device_attribute *attr, char *buf)
+ {
+@@ -1190,6 +1230,7 @@ static const struct attribute *kgsl_dev_attrs[] = {
+ 	&dev_attr_gpuclk.attr,
+ 	&dev_attr_gpu_busy.attr,
+ 	&dev_attr_devfreq.attr,
++	&dev_attr_gpu_max_freq.attr,
+ 	NULL,
+ };
+ 
+diff --git a/drivers/gpu/msm/kgsl_mmu.c b/drivers/gpu/msm/kgsl_mmu.c
+--- a/drivers/gpu/msm/kgsl_mmu.c
++++ b/drivers/gpu/msm/kgsl_mmu.c
+@@ -37,10 +37,10 @@
+ #include "kgsl_sharedmem.h"
+ #include "adreno.h"
+ 
+ #define KGSL_IOMMU_DEFAULT_TTBR0		0x0
+-#define KGSL_IOMMU_TLBFLUSH_SLEEP_IDLE		50
+-#define KGSL_IOMMU_TLBFLUSH_SLEEP_BUSY		10
++#define KGSL_IOMMU_TLBFLUSH_SLEEP_IDLE		25
++#define KGSL_IOMMU_TLBFLUSH_SLEEP_BUSY		5
+ 
+-#define KGSL_IOMMU_TLBFLUSH_TIMEOUT		10000
++#define KGSL_IOMMU_TLBFLUSH_TIMEOUT		5000
+ 
+ #define KGSL_IOMMU_CB_SIZE			SZ_4K

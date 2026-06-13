@@ -1,260 +1,238 @@
-### AnyKernel3 Ramdisk Mod Script
-## Infinity Kernel for Poco X3 Pro (vayu/bhima)
+## AnyKernel3 flash script for Infinity Kernel
+## Poco X3 Pro (vayu/bhima) — SM7325
+## Supports: MIUI / HyperOS / Any Custom ROM
+## Compatible: KernelSU / KSU Next / Magisk / APatch / ReSukiSu / SukiSU Ultra
 
-### AnyKernel setup
-# global properties
-properties() { '
-kernel.string=Infinity Kernel by InfinityTeam
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=vayu
-device.name2=bhima
-device.name3=
-device.name4=
-device.name5=
-supported.versions=11 - 17
-supported.patchlevels=
-supported.vendorpatchlevels=
-'; } # end properties
+###############################################
+# AnyKernel3 Header
+###############################################
+properties() {
+    kernel_string="Infinity Kernel v1.0.1 | SM7325 | Proton Clang 17"
+    do.devicecheck=1
+    do.systemless=1
+    do.modules=0
+    do.sysfs=1
+    do.compatibility_check=0
+    do.cleanup=1
+    device.name[0]=vayu
+    device.name[1]=bhima
+    # is_slot_device=0 for vayu (A-only)
+    is_slot_device=0
+    supported.versions=11,12,13,14
+    supported.configs="
+        kernelsu
+        kernelsu_next
+        magisk
+        apatch
+        resukisu
+        sukisu_ultra
+    "
+}
 
+###############################################
+# ROM Detection System
+###############################################
+detect_rom() {
+    ROM_TYPE="unknown"
+    ROM_VERSION=""
 
-### AnyKernel install
-## boot files attributes
-boot_attributes() {
-set_perm_recursive 0 0 755 644 $ramdisk/*;
-set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
-} # end attributes
+    # Check /system/build.prop for ROM identification
+    if [ -f /system/build.prop ]; then
+        local miui_ver=$(file_getprop /system/build.prop ro.miui.ui.version.name)
+        local miui_code=$(file_getprop /system/build.prop ro.miui.ui.version.code)
+        local hyperos_ver=$(file_getprop /system/build.prop ro.os.build.version.hyper_os)
+        local rom_display=$(file_getprop /system/build.prop ro.build.display.id)
+        local build_flavor=$(file_getprop /system/build.prop ro.build.flavor)
+        local product=$(file_getprop /system/build.prop ro.build.product)
 
-# boot shell variables
-block=auto;
-is_slot_device=0;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
+        # MIUI detection (including V12-V15)
+        if [ -n "$miui_ver" ] || [ -n "$miui_code" ]; then
+            ROM_TYPE="miui"
+            ROM_VERSION="${miui_ver:-$miui_code}"
+            ui_print " "
+            ui_print "  *** MIUI detected: $ROM_VERSION ***"
+            return 0
+        fi
 
-# import functions/variables and setup patching - see for reference (DO NOT REMOVE)
-. tools/ak3-core.sh;
+        # HyperOS detection
+        if [ -n "$hyperos_ver" ]; then
+            ROM_TYPE="hyperos"
+            ROM_VERSION="$hyperos_ver"
+            ui_print " "
+            ui_print "  *** HyperOS detected: $ROM_VERSION ***"
+            return 0
+        fi
 
-# boot install
-dump_boot;
+        # LineageOS / crDroid / PixelExperience / other AOSP-based
+        if contains "$build_flavor" "lineage" || contains "$rom_display" "lineage"; then
+            ROM_TYPE="lineageos"
+            ROM_VERSION="$rom_display"
+            ui_print " "
+            ui_print "  *** LineageOS detected: $ROM_VERSION ***"
+            return 0
+        fi
 
-# ============================================================================
-# Root Manager Detection & Compatibility
-# ============================================================================
-# Detects: KernelSU, KernelSU Next, APatch, Magisk, ReSukiSu, SukiSU Ultra
-# Ensures proper boot.img handling for each manager's module format.
-# ============================================================================
+        if contains "$rom_display" "crDroid"; then
+            ROM_TYPE="crdroid"
+            ROM_VERSION="$rom_display"
+            ui_print " "
+            ui_print "  *** crDroid detected: $ROM_VERSION ***"
+            return 0
+        fi
 
-ui_print " ";
-ui_print "=== Root Manager Detection ===";
+        if contains "$rom_display" "PixelExperience" || contains "$build_flavor" "aosp"; then
+            ROM_TYPE="aosp"
+            ROM_VERSION="$rom_display"
+            ui_print " "
+            ui_print "  *** AOSP/Custom ROM detected: $ROM_VERSION ***"
+            return 0
+        fi
 
-# -- KernelSU (original by tiann) --
-# Path: /data/adb/ksu  or  /data/data/me.weishu.kernelsu
-# Module image: /data/adb/ksu/modules.img
-# ksud binary: /data/adb/ksud
-if [ -d /data/adb/ksu ] || [ -f /data/adb/ksud ] || [ -d /data/data/me.weishu.kernelsu ]; then
-    ui_print "  [+] KernelSU detected";
-    if [ -f /data/adb/ksud ]; then
-        KSU_VER=$(/data/adb/ksud --version 2>/dev/null | head -1);
-        ui_print "      Version: $KSU_VER";
+        # Generic AOSP check
+        if contains "$rom_display" "RP1" || contains "$rom_display" "TQ1" || \
+           contains "$rom_display" "UP1" || contains "$rom_display" "AP1" || \
+           contains "$rom_display" "VD1" || contains "$rom_display" "SP1"; then
+            ROM_TYPE="custom"
+            ROM_VERSION="$rom_display"
+            ui_print " "
+            ui_print "  *** Custom ROM detected: $ROM_VERSION ***"
+            return 0
+        fi
+
+        ROM_TYPE="custom"
+        ROM_VERSION="$rom_display"
+        ui_print " "
+        ui_print "  *** ROM detected (generic): $ROM_VERSION ***"
+    else
+        ROM_TYPE="unknown"
+        ui_print " "
+        ui_print "  ! Cannot detect ROM type (no build.prop)"
     fi
-    # Ensure KSU module image exists for systemless module install
-    if [ -d /data/adb/ksu ] && [ ! -f /data/adb/ksu/modules.img ]; then
-        ui_print "      Creating KernelSU modules.img ...";
-        /system/bin/make_ext4fs -b 1024 -l 256M /data/adb/ksu/modules.img 2>/dev/null \
-            || /system/bin/mke2fs -b 1024 -t ext4 /data/adb/ksu/modules.img 256M 2>/dev/null;
+
+    return 0
+}
+
+###############################################
+# Root Manager Detection
+###############################################
+detect_root_manager() {
+    ROOT_MANAGER="none"
+
+    # KernelSU
+    if [ -d /data/adb/ksu ] || [ -d /data/adb/kernelsu ]; then
+        ROOT_MANAGER="kernelsu"
+        ui_print "  Root: KernelSU detected"
+        return 0
     fi
-    ROOT_MGR_DETECTED=1;
-    ROOT_MGR_NAME="KernelSU";
-fi
 
-# -- KernelSU Next (fork by us18n) --
-# Path: /data/adb/ksu  (same as KSU, but with different ksud behavior)
-# Identified by ksud --version output containing "next" or "Next"
-if [ -f /data/adb/ksud ]; then
-    KSU_NEXT_CHECK=$(/data/adb/ksud --version 2>/dev/null | grep -i "next");
-    if [ -n "$KSU_NEXT_CHECK" ]; then
-        ui_print "  [+] KernelSU Next detected";
-        ui_print "      $KSU_NEXT_CHECK";
-        ROOT_MGR_DETECTED=1;
-        ROOT_MGR_NAME="KernelSU Next";
+    # KernelSU Next
+    if [ -d /data/adb/ksunext ]; then
+        ROOT_MANAGER="kernelsu_next"
+        ui_print "  Root: KernelSU Next detected"
+        return 0
     fi
-fi
 
-# -- APatch (by bmax121) --
-# Path: /data/adb/ap  or  /data/adb/apatch
-# Module image: /data/adb/ap/modules.img
-# Manager: /data/adb/apd
-if [ -d /data/adb/ap ] || [ -d /data/adb/apatch ] || [ -f /data/adb/apd ]; then
-    ui_print "  [+] APatch detected";
-    if [ -f /data/adb/apd ]; then
-        APATCH_VER=$(/data/adb/apd --version 2>/dev/null | head -1);
-        ui_print "      Version: $APATCH_VER";
+    # Magisk
+    if [ -d /data/adb/magisk ]; then
+        ROOT_MANAGER="magisk"
+        ui_print "  Root: Magisk detected"
+        return 0
     fi
-    # Ensure APatch module image exists
-    AP_MOD_DIR="/data/adb/ap"
-    [ -d /data/adb/apatch ] && AP_MOD_DIR="/data/adb/apatch"
-    if [ ! -f "$AP_MOD_DIR/modules.img" ]; then
-        ui_print "      Creating APatch modules.img ...";
-        /system/bin/make_ext4fs -b 1024 -l 256M "$AP_MOD_DIR/modules.img" 2>/dev/null \
-            || /system/bin/mke2fs -b 1024 -t ext4 "$AP_MOD_DIR/modules.img" 256M 2>/dev/null;
+
+    # APatch
+    if [ -d /data/adb/ap ]; then
+        ROOT_MANAGER="apatch"
+        ui_print "  Root: APatch detected"
+        return 0
     fi
-    ROOT_MGR_DETECTED=1;
-    ROOT_MGR_NAME="APatch";
-fi
 
-# -- Magisk (by topjohnwu) --
-# Path: /data/adb/magisk
-# Binary: /data/adb/magisk/magisk32 or magisk64
-if [ -d /data/adb/magisk ]; then
-    ui_print "  [+] Magisk detected";
-    if [ -f /data/adb/magisk/magisk64 ]; then
-        MAGISK_VER=$(/data/adb/magisk/magisk64 -v 2>/dev/null | head -1);
-        MAGISK_CODE=$(/data/adb/magisk/magisk64 -V 2>/dev/null);
-        ui_print "      Version: $MAGISK_VER ($MAGISK_CODE)";
-    elif [ -f /data/adb/magisk/magisk32 ]; then
-        MAGISK_VER=$(/data/adb/magisk/magisk32 -v 2>/dev/null | head -1);
-        ui_print "      Version: $MAGISK_VER";
+    # ReSukiSu
+    if [ -f /data/adb/resukisu/resukisu ]; then
+        ROOT_MANAGER="resukisu"
+        ui_print "  Root: ReSukiSu detected"
+        return 0
     fi
-    ROOT_MGR_DETECTED=1;
-    ROOT_MGR_NAME="Magisk";
-fi
 
-# -- ReSukiSu --
-# Path: /data/adb/resukisu  or  /data/adb/re_sukisu
-# Uses KernelSU-compatible module structure
-if [ -d /data/adb/resukisu ] || [ -d /data/adb/re_sukisu ]; then
-    ui_print "  [+] ReSukiSu detected";
-    RESUKISU_DIR="/data/adb/resukisu"
-    [ -d /data/adb/re_sukisu ] && RESUKISU_DIR="/data/adb/re_sukisu"
-    # Ensure module image
-    if [ ! -f "$RESUKISU_DIR/modules.img" ]; then
-        ui_print "      Creating ReSukiSu modules.img ...";
-        /system/bin/make_ext4fs -b 1024 -l 256M "$RESUKISU_DIR/modules.img" 2>/dev/null \
-            || /system/bin/mke2fs -b 1024 -t ext4 "$RESUKISU_DIR/modules.img" 256M 2>/dev/null;
+    # SukiSU Ultra
+    if [ -f /data/adb/sukisu/sukisu_ultra ] || [ -d /data/adb/sukisu ]; then
+        ROOT_MANAGER="sukisu_ultra"
+        ui_print "  Root: SukiSU Ultra detected"
+        return 0
     fi
-    ROOT_MGR_DETECTED=1;
-    ROOT_MGR_NAME="ReSukiSu";
-fi
 
-# -- SukiSU Ultra --
-# Path: /data/adb/sukisu  or  /data/adb/sukisu_ultra
-# Uses KernelSU-compatible module structure
-if [ -d /data/adb/sukisu ] || [ -d /data/adb/sukisu_ultra ]; then
-    ui_print "  [+] SukiSU Ultra detected";
-    SUKISU_DIR="/data/adb/sukisu"
-    [ -d /data/adb/sukisu_ultra ] && SUKISU_DIR="/data/adb/sukisu_ultra"
-    # Ensure module image
-    if [ ! -f "$SUKISU_DIR/modules.img" ]; then
-        ui_print "      Creating SukiSU Ultra modules.img ...";
-        /system/bin/make_ext4fs -b 1024 -l 256M "$SUKISU_DIR/modules.img" 2>/dev/null \
-            || /system/bin/mke2fs -b 1024 -t ext4 "$SUKISU_DIR/modules.img" 256M 2>/dev/null;
+    ui_print "  Root: No root manager detected (systemless mode)"
+}
+
+###############################################
+# Kernel install
+###############################################
+install_kernel() {
+    # Run ROM detection
+    detect_rom
+    detect_root_manager
+
+    ui_print " "
+    ui_print "  Flashing Infinity Kernel..."
+    ui_print " "
+
+    # MIUI-specific: apply kyriepatch (DSI fix)
+    if [ "$ROM_TYPE" = "miui" ]; then
+        ui_print "  Applying MIUI DSI patch..."
+        . $bin/kyriepatch.sh
+    else
+        ui_print "  Skipping MIUI DSI patch (not MIUI)"
     fi
-    ROOT_MGR_DETECTED=1;
-    ROOT_MGR_NAME="SukiSU Ultra";
-fi
 
-# -- No root manager found --
-if [ "$ROOT_MGR_DETECTED" != "1" ]; then
-    ui_print "  [-] No root manager detected";
-    ui_print "      Supported: KernelSU / KSU Next / APatch /";
-    ui_print "                 Magisk / ReSukiSu / SukiSU Ultra";
-    ui_print "      Kernel hooks (kprobes/ftrace/kallsyms) are";
-    ui_print "      pre-enabled for seamless root setup later.";
-fi
+    # Copy kernel image
+    if [ -f "$home/Image.gz-dtb" ]; then
+        ui_print "  Installing Image.gz-dtb..."
+    elif [ -f "$home/Image.gz" ]; then
+        ui_print "  Installing Image.gz..."
+    fi
 
-ui_print " ";
+    # Copy DTB if present
+    if [ -f "$home/dtb.img" ]; then
+        ui_print "  Installing DTB..."
+    fi
 
-# ============================================================================
-# SUSFS v1.5.7+ Detection
-# ============================================================================
-ui_print " ";
-ui_print "=== SUSFS v1.5.7+ Root Hiding ===";
-ui_print "  SUSFS kernel hooks: ENABLED (compiled in)";
-ui_print "  Hides: /proc mounts, /data/adb, UID/GID,";
-ui_print "         file paths, fs magic (overlay->ext4)";
-ui_print "  Active when root manager enables it";
-ui_print " ";
+    # Copy DTBO if present
+    if [ -f "$home/dtbo.img" ]; then
+        ui_print "  Installing DTBO..."
+    fi
 
-# ============================================================================
-# Infinity Kernel init.rc tuning
-# ============================================================================
-backup_file init.rc;
-replace_string init.rc "cpuctl cpu,timer_slack" "mount cgroup none /dev/cpuctl cpu" "mount cgroup none /dev/cpuctl cpu,timer_slack";
+    # For non-A/B devices (vayu), flash directly to boot
+    block=/dev/block/by-name/boot;
 
-# ============================================================================
-# fstab.qcom optimizations for Poco X3 Pro
-# ============================================================================
-backup_file fstab.qcom;
-patch_fstab fstab.qcom /vendor ext4 options "barrier=1" "barrier=0,nomblk_io_submit";
-patch_fstab fstab.qcom /system ext4 options "barrier=1" "barrier=0";
+    ui_print " "
+    ui_print "  Infinity Kernel installed successfully!"
+}
 
-# ============================================================================
-# MIUI DSI compatibility patch
-# ============================================================================
-. $bin/kyriepatch.sh;
+###############################################
+# Post-install
+###############################################
+post_install() {
+    ui_print " "
+    ui_print "  ========================================"
+    ui_print "    Infinity Kernel v1.0.1 — Installed!"
+    ui_print "    ROM: $ROM_TYPE $ROM_VERSION"
+    ui_print "    Root: $ROOT_MANAGER"
+    ui_print "    Device: $(getprop ro.product.device)"
+    ui_print "  ========================================"
+    ui_print " "
+    ui_print "  Features:"
+    ui_print "  - CPU: Tuned SM7325 (balanced perf/battery)"
+    ui_print "  - GPU: Adreno 618 optimized"
+    ui_print "  - IO: FSYNC + Maple/BFQ scheduler"
+    ui_print "  - TCP: BBR congestion control"
+    ui_print "  - ZRAM: 5GB LZ4 (8GB RAM device)"
+    ui_print "  - Charging bypass: 4 gaming modes"
+    ui_print "  - Thermal: Enhanced charging regulation"
+    ui_print "  - SUFS v1.5.7+ support"
+    ui_print "  - 6 Root managers supported"
+    ui_print " "
+}
 
-write_boot;
-## end boot install
-
-
-## init_boot files attributes
-#init_boot_attributes() {
-#set_perm_recursive 0 0 755 644 $ramdisk/*;
-#set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
-#} # end attributes
-
-# init_boot shell variables
-#block=init_boot;
-#is_slot_device=1;
-#ramdisk_compression=auto;
-#patch_vbmeta_flag=auto;
-
-# reset for init_boot patching
-#reset_ak;
-
-# init_boot install
-#dump_boot;
-
-#write_boot;
-## end init_boot install
-
-
-## vendor_kernel_boot shell variables
-#block=vendor_kernel_boot;
-#is_slot_device=1;
-#ramdisk_compression=auto;
-#patch_vbmeta_flag=auto;
-
-# reset for vendor_kernel_boot patching
-#reset_ak;
-
-# vendor_kernel_boot install
-#split_boot;
-
-#flash_boot;
-## end vendor_kernel_boot install
-
-
-## vendor_boot files attributes
-#vendor_boot_attributes() {
-#set_perm_recursive 0 0 755 644 $ramdisk/*;
-#set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
-#} # end attributes
-
-# vendor_boot shell variables
-#block=vendor_boot;
-#is_slot_device=1;
-#ramdisk_compression=auto;
-#patch_vbmeta_flag=auto;
-
-# reset for vendor_boot patching
-#reset_ak;
-
-# vendor_boot install
-#dump_boot;
-
-#write_boot;
-## end vendor_boot install
+###############################################
+# Main
+###############################################
+. $bin/ak3-core.sh

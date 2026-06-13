@@ -1,0 +1,281 @@
+From 8a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@vayu>
+Date: Sat, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 8/12] sched: big.LITTLE touch boost and task placement for
+ SM7150-AC
+
+- Add input event notifier chain for touch boost triggering
+- Touch event boosts big cluster (cpu2-7) to max for 500ms, then
+  ramps down over 1s in 10 steps to avoid frame drops
+- Add sched_touch_boost sysfs tunable at /sys/kernel/debug/sched/
+- Big.LITTLE placement: migrate high-util tasks to idle big cores
+  when sched_prefer_big=1 (default), threshold 50% little capacity
+- Schedutil rate limits: up=1000us, down=3000us (faster ramp-up,
+  sustain frequency longer on ramp-down)
+
+Target: Poco X3 Pro (vayu/bhima), Snapdragon 732G, 2xA55 + 6xA76
+
+Signed-off-by: Infinity Kernel <infinity@vayu>
+---
+ drivers/input/input.c            |  5 ++++
+ include/linux/input.h            |  2 +
+ kernel/sched/cpufreq_schedutil.c | 12 ++++----
+ kernel/sched/core.c              | 89 +++++++++++++++++++++++++++++++++++++++
+ kernel/sched/fair.c              | 43 ++++++++++++++++++++
+ 5 files changed, 146 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index 1234567..abcdef8 100644
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -38,6 +38,8 @@ MODULE_LICENSE("GPL");
+ 
+ static LIST_HEAD(input_dev_list);
+ static DEFINE_MUTEX(input_mutex);
++/* Infinity Kernel: Notifier chain for touch boost */
++DEFINE_RAW_NOTIFIER_HEAD(input_notifier_list);
+ 
+ static struct input_handler *input_handler_table[8];
+ 
+@@ -311,6 +313,9 @@ static void input_handle_event(struct input_dev *dev,
+ 		}
+ 	}
+ 
++	/* Infinity Kernel: Notify touch boost on every input event */
++	raw_notifier_call_chain(&input_notifier_list, 0, dev);
++
+ 	/* Syncs are expected from the protocol, not from drivers */
+ 	WARN_ON(disposition & INPUT_PASS_TO_DEVICE && type == EV_SYN);
+ 
+diff --git a/include/linux/input.h b/include/linux/input.h
+index 1234567..abcdef8 100644
+--- a/include/linux/input.h
++++ b/include/linux/input.h
+@@ -554,4 +554,6 @@ int input_ff_create_memless(struct input_dev *dev, void *data,
+ int __must_check input_ff_create(struct input_dev *dev, void *data,
+ 		int (*play)(struct input_dev *, void *, struct ff_effect *));
+ 
++/* Infinity Kernel: Input event notifier for touch boost */
++extern struct raw_notifier_head input_notifier_list;
+ #endif
+diff --git a/kernel/sched/cpufreq_schedutil.c b/kernel/sched/cpufreq_schedutil.c
+index 1234567..abcdef8 100644
+--- a/kernel/sched/cpufreq_schedutil.c
++++ b/kernel/sched/cpufreq_schedutil.c
+@@ -75,7 +75,13 @@ struct sugov_tunables {
+ static DEFINE_PER_CPU(struct sugov_cpu, sugov_cpu);
+ 
+ /************************** sysfs interface *************************/
++/*
++ * Infinity Kernel: Asymmetric rate limits for SM7150-AC.
++ * 1000us up   = ~1ms react to load spikes (vs 2ms from patch 0001)
++ * 3000us down = hold freq longer during brief frame idle gaps
++ */
+ 
++
+ /*
+  * This function sets up CPU capacity to be used for scaling utilization
+  * by matching CPU capacity with CPU frequency domain.
+@@ -605,8 +611,10 @@ static struct sugov_tunables *sugov_tunables_alloc(struct cpufreq_policy *polic
+ 
+ 	if (tunables) {
+ 		/* Infinity Kernel: Optimized rate limits */
+-		tunables->rate_limit_us = 2000;   /* Aggressive up-rate */
+-		tunables->down_rate_limit_us = 5000; /* Hold high freq longer */
++		tunables->rate_limit_us = 1000;
++		tunables->down_rate_limit_us = 3000;
++		pr_info("sugov: Infinity v2 rate_limit_us=%u down_rate_limit_us=%u\n",
++			tunables->rate_limit_us, tunables->down_rate_limit_us);
+ 
+ 		tunables->up_rate_limit_ns = tunables->rate_limit_us * NSEC_PER_USEC;
+ 		tunables->down_rate_limit_ns = tunables->up_rate_limit_ns;
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 1234567..abcdef8 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -40,6 +40,10 @@
+ #include <linux/binfmts.h>
+ #include <linux/context_tracking.h>
+ #include <linux/compiler.h>
++#include <linux/input.h>
++#include <linux/cpufreq.h>
++#include <linux/sysfs.h>
++#include <linux/kobject.h>
+ 
+ #include <asm/switch_to.h>
+ #include <asm/tlb.h>
+@@ -66,6 +70,87 @@ const_debug unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_
+ int sysctl_sched_min_granularity			= 750000ULL;
+ int sysctl_sched_wakeup_granularity			= 1000000UL;
+ 
++/* Infinity Kernel: Touch Boost — boost big cluster on touch, ramp 1s */
++#define TOUCH_BOOST_BIG_START	2
++#define TOUCH_BOOST_BIG_END		7
++#define TOUCH_BOOST_HOLD_MS		500
++#define TOUCH_BOOST_RAMP_MS		1000
++#define TOUCH_BOOST_RAMP_STEPS	10
++
++static unsigned int sched_touch_boost_enabled = 1;
++static struct delayed_work touch_boost_ramp_work;
++static int touch_boost_ramp_step = -1;
++static DEFINE_MUTEX(touch_boost_lock);
++
++static void touch_boost_ramp_down(struct work_struct *work)
++{
++	struct cpufreq_policy *policy;
++	unsigned int freq, step_freq;
++	int cpu;
++
++	mutex_lock(&touch_boost_lock);
++	if (++touch_boost_ramp_step >= TOUCH_BOOST_RAMP_STEPS) {
++		touch_boost_ramp_step = -1;
++		mutex_unlock(&touch_boost_lock);
++		return;
++	}
++	for_each_possible_cpu(cpu) {
++		if (cpu < TOUCH_BOOST_BIG_START || cpu > TOUCH_BOOST_BIG_END)
++			continue;
++		policy = cpufreq_cpu_get(cpu);
++		if (!policy) continue;
++		step_freq = policy->cpuinfo.max_freq *
++			(TOUCH_BOOST_RAMP_STEPS - touch_boost_ramp_step) /
++			TOUCH_BOOST_RAMP_STEPS;
++		freq = clamp(step_freq, policy->min, policy->cpuinfo.max_freq);
++		cpufreq_driver_fast_switch(policy, freq);
++		cpufreq_cpu_put(policy);
++	}
++	mutex_unlock(&touch_boost_lock);
++	schedule_delayed_work(&touch_boost_ramp_work,
++		msecs_to_jiffies(TOUCH_BOOST_RAMP_MS / TOUCH_BOOST_RAMP_STEPS));
++}
++
++static int touch_input_nb(struct notifier_block *nb,
++			  unsigned long action, void *data)
++{
++	struct input_dev *dev = data;
++	struct cpufreq_policy *policy;
++	int cpu;
++
++	if (!sched_touch_boost_enabled) return NOTIFY_DONE;
++	if (!test_bit(EV_KEY, dev->evbit) && !test_bit(EV_ABS, dev->evbit))
++		return NOTIFY_DONE;
++
++	mutex_lock(&touch_boost_lock);
++	cancel_delayed_work_sync(&touch_boost_ramp_work);
++	touch_boost_ramp_step = -1;
++	for_each_possible_cpu(cpu) {
++		if (cpu < TOUCH_BOOST_BIG_START || cpu > TOUCH_BOOST_BIG_END)
++			continue;
++		policy = cpufreq_cpu_get(cpu);
++		if (!policy) continue;
++		cpufreq_driver_fast_switch(policy, policy->cpuinfo.max_freq);
++		cpufreq_cpu_put(policy);
++	}
++	mutex_unlock(&touch_boost_lock);
++	schedule_delayed_work(&touch_boost_ramp_work,
++		msecs_to_jiffies(TOUCH_BOOST_HOLD_MS));
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block touch_boost_nb = { .notifier_call = touch_input_nb };
++
++static ssize_t touch_boost_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{ return sprintf(buf, "%u\n", sched_touch_boost_enabled); }
++
++static ssize_t touch_boost_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	unsigned long val;
++	if (kstrtoul(buf, 0, &val) || val > 1) return -EINVAL;
++	sched_touch_boost_enabled = val;
++	return count;
++}
++static struct kobj_attribute touch_boost_attr =
++	__ATTR(touch_boost, 0644, touch_boost_show, touch_boost_store);
++
+ /*
+  * __task_rq_lock - lock the given @p's runqueue, disable preemption.
+  */
+@@ -5811,6 +5896,10 @@ void __init sched_init(void)
+ 
+ 	init_schedstats();
+ 
++	/* Infinity Kernel: Register touch boost notifier + sysfs */
++	raw_notifier_chain_register(&input_notifier_list, &touch_boost_nb);
++	INIT_DELAYED_WORK(&touch_boost_ramp_work, touch_boost_ramp_down);
++	if (sysfs_create_file(kernel_kobj, &touch_boost_attr.attr))
++		pr_warn("sched: touch_boost sysfs create failed\n");
++
+ 	scheduler_running = 1;
+ }
+ 
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 1234567..abcdef8 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -33,6 +33,7 @@
+ #include <linux/cpuset.h>
+ #include <linux/sched/isolation.h>
+ #include <linux/sched/rt.h>
++#include <linux/sysfs.h>
+ 
+ #include <asm/tlb.h>
+ 
+@@ -5479,6 +5480,16 @@ static int wake_affine_weight(struct sched_domain *sd, struct task_struct *p,
+ 	return sync;
+ }
+ 
++/* Infinity Kernel: Big.LITTLE placement for SM7150-AC (cpu0-1=A55, cpu2-7=A76) */
++#define LITTLE_CPU_END		1
++#define BIG_CPU_START		2
++#define BIG_UTIL_THRESHOLD	50  /* % of little core capacity */
++
++static unsigned int sched_prefer_big = 1;
++
++static ssize_t sched_prefer_big_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{ return sprintf(buf, "%u\n", sched_prefer_big); }
++
++static ssize_t sched_prefer_big_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	unsigned long val;
++	if (kstrtoul(buf, 0, &val) || val > 1) return -EINVAL;
++	sched_prefer_big = val;
++	return count;
++}
++static struct kobj_attribute prefer_big_attr =
++	__ATTR(sched_prefer_big, 0644, sched_prefer_big_show, sched_prefer_big_store);
++
+ /*
+  * select_task_rq_fair: Select target runqueue for the waking task in domains
+  * that have the 'sd_flag' flag set. This is a balancing operation that tries to
+@@ -5561,6 +5572,21 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_
+ 	}
+ 	rcu_read_unlock();
+ 
++	/*
++	 * Infinity Kernel: If task on little core with util > 50% capacity
++	 * and a big core is idle, migrate immediately.  Prevents UI jank
++	 * from bursty threads stuck on slow A55 while A76 sits idle.
++	 */
++	if (sched_prefer_big && new_cpu <= LITTLE_CPU_END) {
++		unsigned long cap = capacity_of(new_cpu);
++		unsigned long util = task_util(p);
++
++		if (cap > 0 && util * 100 > cap * BIG_UTIL_THRESHOLD) {
++			int cpu;
++			for_each_online_cpu(cpu)
++				if (cpu >= BIG_CPU_START && idle_cpu(cpu)) {
++					new_cpu = cpu;
++					break;
++				}
++		}
++	}
++
+ 	return new_cpu;
+ }
+ 
+--
+2.17.1

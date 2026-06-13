@@ -1,28 +1,8 @@
-#
-# Infinity Charging Bypass Control driver configuration
-#
-# Copyright (c) 2024 Infinity Kernel Project
-#
-
 config CHARGING_CONTROL
-	tristate "Infinity Charging Bypass Control"
-	depends on POWER_SUPPLY && SYSFS
-	default n
-	---help---
-	  Say Y here to enable the Infinity Charging Bypass Control driver
-	  for Poco X3 Pro (vayu/bhima, Snapdragon 732G / SM7150-AC).
-
-	  This driver provides charge-current limiting with four gaming
-	  profiles (LIGHT 2500 mA, BALANCED 2000 mA, EXTREME 1500 mA,
-	  ULTRA 500 mA), thermal-cooldown logic (pause at 45 °C, resume
-	  at 40 °C), and a low-battery auto-resume safety net (15 %).
-
-	  Userspace control is available through:
-	    - sysfs:  /sys/kernel/charging_control/
-	    - ioctl:  /dev/infinity_charge
-	    - DT overlay for per-board tuning
-
-	  To compile this driver as a module, choose M here.  The module
-	  will be called infinity_charging_control.
-
-	  If unsure, say N.
+    tristate "Infinity Charging Control (Gaming Bypass)"
+    default y
+    depends on POWER_SUPPLY && THERMAL
+    help
+      Infinity Kernel charging bypass control for gaming.
+      Supports 4 modes (LIGHT/BALANCED/EXTREME/ULTRA) with
+      thermal monitoring and auto-resume.

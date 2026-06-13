@@ -1,0 +1,96 @@
+From 7c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c Mon Sep 17 00:00:00 2001
+From: Infinity Kernel <infinity@kernel.dev>
+Date: Fri, 13 Jun 2025 00:00:00 +0000
+Subject: [PATCH 3/3] fsync/io: skip redundant syncs and reduce I/O timeout
+
+Add inode_needs_fsync() helper to avoid unnecessary superblock syncs
+when the inode is already clean. Reduce BLK_DEFAULT_TIMEOUT from 30s
+to 15s for faster I/O error detection. Ensure BFQ I/O scheduler is
+built-in for better I/O responsiveness on SM7325 (vayu) storage.
+
+Signed-off-by: Infinity Kernel <infinity@kernel.dev>
+---
+ include/linux/fs.h | 12 ++++++++++++
+ fs/sync.c          | 9 +++++++++
+ block/blk-core.c   |  2 +-
+ block/Makefile     |  1 +
+ 4 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index 1111111..2222222 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -1849,6 +1849,19 @@ static inline void filemap_write_and_wait(struct address_space *mapping)
+ int filemap_write_and_wait_range(struct address_space *mapping,
+                                 loff_t lstart, loff_t lend);
+
++/*
++ * FSYNC inline helpers: avoid redundant vfs_fsync calls when the
++ * inode is already clean.  Used by do_fsync() to short-circuit
++ * before entering the block layer on SM7325 (vayu).
++ */
++static inline bool inode_needs_fsync(struct inode *inode, int datasync)
++{
++       if (datasync)
++               return inode->i_state & (I_DIRTY_DATASYNC | I_DIRTY_PAGES);
++       return inode->i_state &
++               (I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES);
++}
++
+ /**
+  * filemap_check_writable_error - check filesystem for writeback errors
+  * @mapping: the address_space
+diff --git a/fs/sync.c b/fs/sync.c
+index 3333331..3333332 100644
+--- a/fs/sync.c
++++ b/fs/sync.c
+@@ -122,11 +122,20 @@ SYSCALL_DEFINE1(syncfs, int, fd)
+  * Note that this is not the same as sys_sync(): it only syncs one file.
+  */
+ static int do_fsync(unsigned int fd, int datasync)
+ {
+        struct fd f = fdget(fd);
+        int ret = -EBADF;
+
+        if (f.file) {
++               struct inode *inode = f.file->f_mapping->host;
++
++               /* Fast path: skip fsync if inode is already clean.
++                * Avoids unnecessary superblock writeback on SM7325.
++                */
++               if (!inode_needs_fsync(inode, datasync)) {
++                       fdput(f);
++                       return 0;
++               }
+                ret = vfs_fsync(f.file, datasync);
+                fdput(f);
+        }
+diff --git a/block/blk-core.c b/block/blk-core.c
+index 4444441..4444442 100644
+--- a/block/blk-core.c
++++ b/block/blk-core.c
+@@ -40,9 +40,9 @@
+ #include "blk.h"
+ #include "blk-mq-sched.h"
+
+-#define BLK_DEFAULT_TIMEOUT    (30 * HZ)
++#define BLK_DEFAULT_TIMEOUT    (15 * HZ)
+
+ DEFINE_IDA(blk_queue_ida);
+
+ /*
+  * For the allocated request table
+diff --git a/block/Makefile b/block/Makefile
+index 5555551..5555552 100644
+--- a/block/Makefile
++++ b/block/Makefile
+@@ -8,6 +8,7 @@ obj-y           := bio.o elevator.o blk-core.o blk-tag.o blk-sysfs.o \
+ obj-$(CONFIG_BLK_DEV_BSG)      += bsg.o
+ obj-$(CONFIG_BLK_DEV_BSGLIB)   += bsg-lib.o
+ obj-$(CONFIG_BLK_CGROUP)       += blk-cgroup.o
++obj-$(CONFIG_IOSCHED_BFQ)      += bfq-iosched.o bfq-cgroup.o
+ obj-$(CONFIG_BLK_DEV_THROTTLING)       += blk-throttle.o
+ obj-$(CONFIG_IOSCHED_NOOP)     += noop-iosched.o
+ obj-$(CONFIG_IOSCHED_DEADLINE) += deadline-iosched.o
+--
+2.14.1

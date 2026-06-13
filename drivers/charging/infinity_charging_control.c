@@ -1,892 +1,901 @@
 /*
- * Infinity Charging Bypass Control Driver
+ * Infinity Kernel Charging Bypass Control Driver
+ * Copyright (C) 2024 Infinity Kernel Team
  *
- * Copyright (c) 2024 Infinity Kernel Project
- * Author: Infinity Kernel Team
+ * Platform driver for Poco X3 Pro (SM7325) providing gaming-optimized
+ * charging bypass control with thermal monitoring and auto-resume.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * Platform driver providing charge-current limiting with four gaming
- * profiles, thermal-cooldown logic, low-battery auto-resume, sysfs
- * and IOCTL interfaces.  Targets Linux 4.14.180 on Poco X3 Pro
- * (vayu/bhima, Snapdragon 732G / SM7150-AC).
- *
- * Power-supply integration reads live battery temperature and capacity
- * from the PMI8998 / SMB2 charger fuel-gauge exposed through the
- * standard Linux power-supply class.
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
  */
 
-#define pr_fmt(fmt) "infinity_charge: " fmt
+#define pr_fmt(fmt) "infinity-charging: " fmt
 
 #include <linux/module.h>
-#include <linux/moduleparam.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/platform_device.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/cdev.h>
+#include <linux/miscdevice.h>
 #include <linux/fs.h>
+#include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/mutex.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
 #include <linux/power_supply.h>
-#include <linux/sched.h>
-#include <linux/uaccess.h>
-#include <linux/ioctl.h>
-#include <linux/init.h>
-#include <linux/kernel.h>
+#include <linux/workqueue.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 
 #include <linux/infinity_charging_control.h>
 
-/* ================================================================== */
-/*  Driver Constants                                                   */
-/* ================================================================== */
+/* ------------------------------------------------------------------ */
+/* Mode configuration table                                           */
+/* ------------------------------------------------------------------ */
 
-#define DRIVER_NAME       "infinity_charging_control"
-#define DRIVER_CLASS_NAME "infinity-charge"
-#define CHARDEV_NAME      "infinity_charge"
-#define POLL_INTERVAL_MS  2000  /* 2 s between thermal / capacity checks */
-#define MAX_STATUS_LEN    128
-
-/* ================================================================== */
-/*  Per-Instance Context                                               */
-/* ================================================================== */
-
-struct infinity_charge_ctx {
-	/* --- Configuration (set once from DT / module param) --- */
-	int cooldown_temp;       /* millidegrees C to pause charging   */
-	int resume_temp;         /* millidegrees C to resume charging   */
-	int low_batt_cap;        /* percent – auto-resume threshold     */
-	int current_limits[CHARGING_MODE_MAX]; /* mA per mode index     */
-
-	/* --- Mutable state --- */
-	int mode;                /* enum charging_mode                  */
-	bool enabled;            /* bypass active flag                  */
-	bool thermal_cooldown;   /* currently throttled by temp         */
-	int batt_temp;           /* cached batt temp (m°C)              */
-	int batt_capacity;       /* cached batt capacity (0-100 %)      */
-	int active_limit;        /* current mA limit applied            */
-
-	/* --- Synchronisation --- */
-	struct mutex lock;       /* protects mutable state              */
-
-	/* --- Periodic poll --- */
-	struct delayed_work poll_work;
-
-	/* --- Misc --- */
-	struct device *dev;      /* for dev_* logging helpers          */
-	struct power_supply *batt_psy;
+/**
+ * struct charging_mode_config - Per-mode charging parameters
+ * @pause_soc:          SoC percentage at which charging is paused
+ * @thermal_limit:      Thermal throttle threshold in Celsius
+ * @current_reduction:  Percentage to reduce charge current (0-100)
+ * @label:              Human-readable mode name for sysfs
+ */
+struct charging_mode_config {
+	int  pause_soc;
+	int  thermal_limit;
+	int  current_reduction;
+	const char *label;
 };
 
-static struct infinity_charge_ctx *g_ctx;   /* singleton for sysfs / ioctl */
+static const struct charging_mode_config mode_configs[] = {
+	[CHARGING_MODE_OFF] = {
+		.pause_soc		= 100,
+		.thermal_limit		= THERMAL_LIMIT_DISABLED,
+		.current_reduction	= 0,
+		.label			= "OFF",
+	},
+	[CHARGING_MODE_LIGHT] = {
+		.pause_soc		= 80,
+		.thermal_limit		= THERMAL_LIMIT_45C,
+		.current_reduction	= 10,
+		.label			= "LIGHT",
+	},
+	[CHARGING_MODE_BALANCED] = {
+		.pause_soc		= 70,
+		.thermal_limit		= THERMAL_LIMIT_40C,
+		.current_reduction	= 30,
+		.label			= "BALANCED",
+	},
+	[CHARGING_MODE_EXTREME] = {
+		.pause_soc		= 60,
+		.thermal_limit		= THERMAL_LIMIT_35C,
+		.current_reduction	= 50,
+		.label			= "EXTREME",
+	},
+	[CHARGING_MODE_ULTRA] = {
+		.pause_soc		= 50,
+		.thermal_limit		= THERMAL_LIMIT_35C,
+		.current_reduction	= 70,
+		.label			= "ULTRA",
+	},
+};
 
-/* ================================================================== */
-/*  Mode-to-string helpers                                             */
-/* ================================================================== */
+/* ------------------------------------------------------------------ */
+/* Driver private state                                               */
+/* ------------------------------------------------------------------ */
 
-static const char *mode_to_str(int mode)
+#define THERMAL_MONITOR_INTERVAL_MS	2000
+#define AUTO_RESUME_DEFAULT		15
+#define THERMAL_HYSTERESIS_C		5
+#define SOC_HYSTERESIS			2
+#define MAX_MODE			CHARGING_MODE_ULTRA
+#define MAX_THERMAL_LIMIT		55
+#define MIN_THERMAL_LIMIT		20
+#define DEFAULT_INPUT_CURRENT_UA	3000000  /* 3A default */
+
+struct infinity_charging_drv {
+	struct device		*dev;
+	struct miscdevice	miscdev;
+	struct mutex		lock;
+
+	/* Current configuration */
+	enum infinity_charging_mode mode;
+	int			thermal_limit_override; /* 0 = use mode default */
+	int			auto_resume_threshold;
+
+	/* Runtime state */
+	int			battery_voltage_uv;
+	int			battery_current_ua;
+	int			battery_temp_mc;
+	int			battery_soc;
+	int			battery_charging_status;
+	bool			is_charging;
+	bool			thermal_throttled;
+	bool			bypass_active;
+	bool			soc_paused;
+
+	/* Saved original charge current for restoration */
+	int			original_current_ua;
+	int			effective_current_ua;
+
+	/* Work queue for periodic thermal / SoC monitoring */
+	struct delayed_work	monitor_work;
+	bool			monitor_running;
+
+	/* Power supply references */
+	struct power_supply	*battery_psy;
+	struct power_supply	*charger_psy;
+
+	/* sysfs kobject for /sys/kernel/infinity_charging */
+	struct kobject		*sysfs_kobj;
+};
+
+static struct infinity_charging_drv *g_charging_drv;
+
+/* ------------------------------------------------------------------ */
+/* Power supply helpers                                               */
+/* ------------------------------------------------------------------ */
+
+static int icc_read_battery_property(struct infinity_charging_drv *drv,
+				     enum power_supply_property psp,
+				     union power_supply_propval *val)
 {
-	switch (mode) {
-	case CHARGING_MODE_DISABLED:  return "DISABLED";
-	case CHARGING_MODE_LIGHT:     return "LIGHT";
-	case CHARGING_MODE_BALANCED:  return "BALANCED";
-	case CHARGING_MODE_EXTREME:   return "EXTREME";
-	case CHARGING_MODE_ULTRA:     return "ULTRA";
-	default:                      return "UNKNOWN";
+	if (!drv->battery_psy)
+		drv->battery_psy = power_supply_get_by_name("battery");
+
+	if (!drv->battery_psy) {
+		dev_err_ratelimited(drv->dev,
+				    "battery power_supply not found\n");
+		return -ENODEV;
 	}
+
+	return power_supply_get_property(drv->battery_psy, psp, val);
 }
 
-static int str_to_mode(const char *buf, size_t len)
+static int icc_set_charger_property(struct infinity_charging_drv *drv,
+				    enum power_supply_property psp,
+				    union power_supply_propval *val)
 {
-	if (len >= 4 && !strncasecmp(buf, "light", 5))
-		return CHARGING_MODE_LIGHT;
-	if (len >= 5 && !strncasecmp(buf, "balanced", 8))
-		return CHARGING_MODE_BALANCED;
-	if (len >= 4 && !strncasecmp(buf, "extreme", 7))
-		return CHARGING_MODE_EXTREME;
-	if (len >= 4 && !strncasecmp(buf, "ultra", 5))
-		return CHARGING_MODE_ULTRA;
-	if (len >= 4 && !strncasecmp(buf, "disabled", 8))
-		return CHARGING_MODE_DISABLED;
-	/* Try numeric */
-	if (kstrtoint(buf, 10, &len) == 0 && len >= 0 && len < CHARGING_MODE_MAX)
-		return len;
-	return -EINVAL;
+	if (!drv->charger_psy)
+		drv->charger_psy = power_supply_get_by_name("battery");
+
+	if (!drv->charger_psy) {
+		dev_err_ratelimited(drv->dev,
+				    "charger power_supply not found\n");
+		return -ENODEV;
+	}
+
+	return power_supply_set_property(drv->charger_psy, psp, val);
 }
 
-/* ================================================================== */
-/*  Power Supply Integration                                           */
-/* ================================================================== */
+/* ------------------------------------------------------------------ */
+/* Charging control logic                                             */
+/* ------------------------------------------------------------------ */
 
 /**
- * refresh_battery_status() - Read temp & capacity from power_supply.
- *
- * We look for a battery power_supply named "battery" (standard on
- * Qualcomm PMI8998 platforms).  On failure we keep the last-known
- * values so the driver degrades gracefully.
+ * icc_enable_charging() - Re-enable charging at the effective current
  */
-static void refresh_battery_status(struct infinity_charge_ctx *ctx)
+static int icc_enable_charging(struct infinity_charging_drv *drv)
 {
-	union power_supply_propval val = { .intval = 0 };
+	union power_supply_propval val;
+	int ret;
 
-	if (!ctx->batt_psy) {
-		ctx->batt_psy = power_supply_get_by_name("battery");
-		if (!ctx->batt_psy)
-			return;
+	/* Set charge type to enable charging */
+	val.intval = POWER_SUPPLY_CHARGE_TYPE_FAST;
+	ret = icc_set_charger_property(drv, POWER_SUPPLY_PROP_CHARGE_TYPE, &val);
+	if (ret) {
+		dev_err(drv->dev, "failed to enable charging: %d\n", ret);
+		return ret;
 	}
 
-	if (power_supply_get_property(ctx->batt_psy,
-				POWER_SUPPLY_PROP_TEMP, &val) == 0)
-		ctx->batt_temp = val.intval;
+	/* Restore effective input current limit */
+	val.intval = drv->effective_current_ua;
+	ret = icc_set_charger_property(drv, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+				       &val);
+	if (ret) {
+		dev_err(drv->dev, "failed to set input current: %d\n", ret);
+		return ret;
+	}
 
-	if (power_supply_get_property(ctx->batt_psy,
-				POWER_SUPPLY_PROP_CAPACITY, &val) == 0)
-		ctx->batt_capacity = val.intval;
+	drv->is_charging = true;
+	drv->bypass_active = false;
+	drv->thermal_throttled = false;
+	drv->soc_paused = false;
+
+	dev_info(drv->dev, "charging enabled at %d uA\n",
+		 drv->effective_current_ua);
+	return 0;
 }
 
 /**
- * apply_charge_limit() - Tell the charger IC the new current limit.
- *
- * On PMI8998 / SMB2 the fcc (fast-charge-current) is exposed through
- * POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX.  Writing to it
- * instructs the charger hardware to cap the input current.
- *
- * We skip the write when bypass is disabled so stock charging is
- * untouched.
+ * icc_disable_charging() - Pause / disable charging
  */
-static void apply_charge_limit(struct infinity_charge_ctx *ctx)
+static int icc_disable_charging(struct infinity_charging_drv *drv)
+{
+	union power_supply_propval val;
+	int ret;
+
+	/* Disable charging by setting charge type to none */
+	val.intval = POWER_SUPPLY_CHARGE_TYPE_NONE;
+	ret = icc_set_charger_property(drv, POWER_SUPPLY_PROP_CHARGE_TYPE, &val);
+	if (ret) {
+		dev_err(drv->dev, "failed to disable charging: %d\n", ret);
+		return ret;
+	}
+
+	drv->is_charging = false;
+	drv->bypass_active = true;
+
+	dev_info(drv->dev, "charging disabled (bypass active)\n");
+	return 0;
+}
+
+/**
+ * icc_update_effective_current() - Calculate and apply charge current reduction
+ */
+static int icc_update_effective_current(struct infinity_charging_drv *drv)
+{
+	const struct charging_mode_config *cfg;
+	union power_supply_propval val;
+	int reduction_ua;
+
+	if (drv->mode == CHARGING_MODE_OFF) {
+		drv->effective_current_ua = drv->original_current_ua;
+	} else {
+		cfg = &mode_configs[drv->mode];
+		reduction_ua = (drv->original_current_ua *
+				cfg->current_reduction) / 100;
+		drv->effective_current_ua = drv->original_current_ua - reduction_ua;
+	}
+
+	/* Only set the current if charging is currently active */
+	if (drv->is_charging) {
+		val.intval = drv->effective_current_ua;
+		return icc_set_charger_property(
+			drv, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT, &val);
+	}
+
+	return 0;
+}
+
+/**
+ * icc_read_battery_status() - Refresh all cached battery readings
+ */
+static void icc_read_battery_status(struct infinity_charging_drv *drv)
 {
 	union power_supply_propval val;
 
-	if (!ctx->batt_psy) {
-		ctx->batt_psy = power_supply_get_by_name("battery");
-		if (!ctx->batt_psy)
-			return;
-	}
+	/* Battery temperature in millidegrees Celsius */
+	if (icc_read_battery_property(drv, POWER_SUPPLY_PROP_TEMP, &val) == 0)
+		drv->battery_temp_mc = val.intval;
 
-	if (!ctx->enabled || ctx->mode == CHARGING_MODE_DISABLED) {
-		ctx->active_limit = 0;
-		pr_debug("bypass disabled – leaving stock charge current\n");
-		return;
-	}
+	/* Battery SoC percentage */
+	if (icc_read_battery_property(drv, POWER_SUPPLY_PROP_CAPACITY, &val) == 0)
+		drv->battery_soc = val.intval;
 
-	/* Auto-resume safety: if battery is critically low, disable limit */
-	if (ctx->batt_capacity < ctx->low_batt_cap && ctx->batt_capacity >= 0) {
-		pr_info("battery %d%% < %d%% – auto-resume full charging\n",
-			ctx->batt_capacity, ctx->low_batt_cap);
-		val.intval = 0;  /* 0 = restore hardware default */
-		power_supply_set_property(ctx->batt_psy,
-				POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX, &val);
-		ctx->active_limit = 0;
-		return;
-	}
+	/* Battery voltage in microvolts */
+	if (icc_read_battery_property(drv, POWER_SUPPLY_PROP_VOLTAGE_NOW, &val) == 0)
+		drv->battery_voltage_uv = val.intval;
 
-	/* Thermal cooldown: drop to minimum safe current */
-	if (ctx->thermal_cooldown) {
-		val.intval = ctx->current_limits[CHARGING_MODE_ULTRA];
-		power_supply_set_property(ctx->batt_psy,
-				POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX, &val);
-		ctx->active_limit = val.intval;
-		pr_debug("thermal cooldown – limit %d mA\n", val.intval);
-		return;
-	}
+	/* Battery current in microamps */
+	if (icc_read_battery_property(drv, POWER_SUPPLY_PROP_CURRENT_NOW, &val) == 0)
+		drv->battery_current_ua = val.intval;
 
-	/* Normal operation – apply profile limit */
-	val.intval = ctx->current_limits[ctx->mode] * 1000; /* mA -> µA */
-	power_supply_set_property(ctx->batt_psy,
-			POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX, &val);
-	ctx->active_limit = ctx->current_limits[ctx->mode];
-	pr_debug("mode %s – limit %d mA\n",
-		 mode_to_str(ctx->mode), ctx->active_limit);
+	/* Charging status */
+	if (icc_read_battery_property(drv, POWER_SUPPLY_PROP_STATUS, &val) == 0)
+		drv->battery_charging_status = val.intval;
 }
 
-/* ================================================================== */
-/*  Periodic Monitoring Worker                                         */
-/* ================================================================== */
+/* ------------------------------------------------------------------ */
+/* Thermal / SoC monitoring work                                      */
+/* ------------------------------------------------------------------ */
 
-static void poll_worker(struct work_struct *work)
+/**
+ * icc_monitor_work_fn() - Periodic monitoring of temperature and SoC
+ *
+ * Runs every THERMAL_MONITOR_INTERVAL_MS to check if charging should
+ * be paused or resumed based on thermal limits, SoC thresholds, and
+ * the auto-resume safety feature.
+ */
+static void icc_monitor_work_fn(struct work_struct *work)
 {
-	struct infinity_charge_ctx *ctx =
-		container_of(work, struct infinity_charge_ctx, poll_work.work);
-	bool prev_cooldown;
-	bool need_apply = false;
+	struct infinity_charging_drv *drv = g_charging_drv;
+	const struct charging_mode_config *cfg;
+	int temp_c, active_thermal_limit;
+	int pause_soc, hysteresis_soc;
 
-	mutex_lock(&ctx->lock);
+	if (!drv || !drv->monitor_running)
+		return;
 
-	refresh_battery_status(ctx);
+	mutex_lock(&drv->lock);
 
-	/* --- Thermal monitoring --- */
-	prev_cooldown = ctx->thermal_cooldown;
+	/* Always refresh readings */
+	icc_read_battery_status(drv);
 
-	if (ctx->batt_temp >= ctx->cooldown_temp && !ctx->thermal_cooldown) {
-		ctx->thermal_cooldown = true;
-		pr_warn("battery %d m°C >= cooldown %d m°C – throttling\n",
-			ctx->batt_temp, ctx->cooldown_temp);
-		need_apply = true;
-	} else if (ctx->batt_temp <= ctx->resume_temp && ctx->thermal_cooldown) {
-		ctx->thermal_cooldown = false;
-		pr_info("battery %d m°C <= resume %d m°C – normal charging\n",
-			ctx->batt_temp, ctx->resume_temp);
-		need_apply = true;
+	/* In OFF mode, ensure monitoring loop continues but no control */
+	if (drv->mode == CHARGING_MODE_OFF) {
+		if (!drv->is_charging)
+			icc_enable_charging(drv);
+		goto schedule_next;
 	}
 
-	if (ctx->thermal_cooldown != prev_cooldown)
-		need_apply = true;
+	cfg = &mode_configs[drv->mode];
+	temp_c = drv->battery_temp_mc / 1000;
 
-	/* --- Low-battery auto-resume --- */
-	if (ctx->enabled && ctx->batt_capacity < ctx->low_batt_cap
-	    && ctx->batt_capacity >= 0) {
-		need_apply = true;
+	/* Determine effective thermal limit */
+	if (drv->thermal_limit_override > 0)
+		active_thermal_limit = drv->thermal_limit_override;
+	else
+		active_thermal_limit = cfg->thermal_limit;
+
+	pause_soc = cfg->pause_soc;
+	hysteresis_soc = max(pause_soc - SOC_HYSTERESIS, 0);
+
+	/* ---- Auto-resume safety check ---- */
+	if (drv->bypass_active &&
+	    drv->battery_soc <= drv->auto_resume_threshold) {
+		dev_info(drv->dev,
+			 "auto-resume triggered: SoC=%d%% <= threshold=%d%%\n",
+			 drv->battery_soc, drv->auto_resume_threshold);
+		icc_enable_charging(drv);
+		goto schedule_next;
 	}
 
-	if (need_apply)
-		apply_charge_limit(ctx);
+	/* ---- Thermal throttle check ---- */
+	if (active_thermal_limit > THERMAL_LIMIT_DISABLED &&
+	    temp_c >= active_thermal_limit) {
+		if (drv->is_charging) {
+			dev_info(drv->dev,
+				 "thermal throttle: temp=%dC >= limit=%dC\n",
+				 temp_c, active_thermal_limit);
+			icc_disable_charging(drv);
+			drv->thermal_throttled = true;
+		}
+	} else if (drv->thermal_throttled &&
+		   temp_c <= (active_thermal_limit - THERMAL_HYSTERESIS_C)) {
+		dev_info(drv->dev,
+			 "thermal de-throttle: temp=%dC <= %dC\n",
+			 temp_c,
+			 active_thermal_limit - THERMAL_HYSTERESIS_C);
+		drv->thermal_throttled = false;
+		/* Don't re-enable here; let SoC check handle it */
+	}
 
-	mutex_unlock(&ctx->lock);
+	/* ---- SoC pause check ---- */
+	if (drv->battery_soc >= pause_soc) {
+		if (drv->is_charging) {
+			dev_info(drv->dev,
+				 "SoC pause: level=%d%% >= limit=%d%%\n",
+				 drv->battery_soc, pause_soc);
+			icc_disable_charging(drv);
+			drv->soc_paused = true;
+		}
+	} else if (drv->soc_paused &&
+		   drv->battery_soc <= hysteresis_soc &&
+		   !drv->thermal_throttled) {
+		dev_info(drv->dev,
+			 "SoC resume: level=%d%% <= %d%%\n",
+			 drv->battery_soc, hysteresis_soc);
+		drv->soc_paused = false;
+		icc_enable_charging(drv);
+	} else if (!drv->is_charging && !drv->thermal_throttled &&
+		   !drv->soc_paused && !drv->bypass_active) {
+		/* Nothing is blocking; re-enable if somehow disabled */
+		icc_enable_charging(drv);
+	}
 
-	schedule_delayed_work(&ctx->poll_work,
-			msecs_to_jiffies(POLL_INTERVAL_MS));
+schedule_next:
+	mutex_unlock(&drv->lock);
+
+	if (drv->monitor_running)
+		schedule_delayed_work(&drv->monitor_work,
+				      msecs_to_jiffies(THERMAL_MONITOR_INTERVAL_MS));
 }
 
-/* ================================================================== */
-/*  sysfs Attributes                                                   */
-/* ================================================================== */
+/* ------------------------------------------------------------------ */
+/* Mode switching                                                     */
+/* ------------------------------------------------------------------ */
 
-#define SYSFS_ATTR_RO(name) \
-static ssize_t name##_show(struct kobject *kobj, \
-		struct kobj_attribute *attr, char *buf)
-
-#define SYSFS_ATTR_RW(name) \
-static ssize_t name##_show(struct kobject *kobj, \
-		struct kobj_attribute *attr, char *buf); \
-static ssize_t name##_store(struct kobject *kobj, \
-		struct kobj_attribute *attr, const char *buf, size_t count)
-
-/* --- mode --- */
-SYSFS_ATTR_RW(mode);
-
-static ssize_t mode_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
+static int icc_set_mode(struct infinity_charging_drv *drv,
+			enum infinity_charging_mode new_mode)
 {
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int mode;
-
-	if (!ctx)
-		return -ENODEV;
-
-	mutex_lock(&ctx->lock);
-	mode = ctx->mode;
-	mutex_unlock(&ctx->lock);
-
-	return scnprintf(buf, PAGE_SIZE, "%s\n", mode_to_str(mode));
-}
-
-static ssize_t mode_store(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int new_mode;
-
-	if (!ctx)
-		return -ENODEV;
-
-	new_mode = str_to_mode(buf, count);
-	if (new_mode < 0)
+	if (new_mode > MAX_MODE) {
+		dev_err(drv->dev, "invalid mode %d\n", new_mode);
 		return -EINVAL;
-
-	mutex_lock(&ctx->lock);
-	if (new_mode == ctx->mode) {
-		mutex_unlock(&ctx->lock);
-		return count;
 	}
-	ctx->mode = new_mode;
-	pr_info("mode changed to %s\n", mode_to_str(new_mode));
-	apply_charge_limit(ctx);
-	mutex_unlock(&ctx->lock);
 
-	return count;
+	mutex_lock(&drv->lock);
+
+	drv->mode = new_mode;
+	dev_info(drv->dev, "mode set to %s\n", mode_configs[new_mode].label);
+
+	/* Recalculate effective current for the new mode */
+	icc_update_effective_current(drv);
+
+	/* If switching to OFF, immediately re-enable charging */
+	if (new_mode == CHARGING_MODE_OFF && !drv->is_charging) {
+		icc_enable_charging(drv);
+	}
+
+	mutex_unlock(&drv->lock);
+	return 0;
 }
 
-/* --- enabled --- */
-SYSFS_ATTR_RW(enabled);
+/* ------------------------------------------------------------------ */
+/* sysfs attributes                                                   */
+/* ------------------------------------------------------------------ */
 
-static ssize_t enabled_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
+static ssize_t charging_mode_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
 {
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int en;
+	struct infinity_charging_drv *drv = g_charging_drv;
 
-	if (!ctx)
+	if (!drv)
 		return -ENODEV;
 
-	mutex_lock(&ctx->lock);
-	en = ctx->enabled;
-	mutex_unlock(&ctx->lock);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", en);
+	return snprintf(buf, PAGE_SIZE, "%d\n", drv->mode);
 }
 
-static ssize_t enabled_store(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
+static ssize_t charging_mode_store(struct kobject *kobj,
+				   struct kobj_attribute *attr,
+				   const char *buf, size_t count)
 {
-	struct infinity_charge_ctx *ctx = g_ctx;
+	struct infinity_charging_drv *drv = g_charging_drv;
 	unsigned long val;
 	int ret;
 
-	if (!ctx)
+	if (!drv)
 		return -ENODEV;
 
 	ret = kstrtoul(buf, 10, &val);
 	if (ret)
 		return ret;
-	if (val > 1)
+
+	if (val > MAX_MODE)
 		return -EINVAL;
 
-	mutex_lock(&ctx->lock);
-	if ((bool)val == ctx->enabled) {
-		mutex_unlock(&ctx->lock);
-		return count;
-	}
-	ctx->enabled = (bool)val;
-	pr_info("bypass %s\n", ctx->enabled ? "enabled" : "disabled");
-	apply_charge_limit(ctx);
-	mutex_unlock(&ctx->lock);
+	ret = icc_set_mode(drv, (enum infinity_charging_mode)val);
+	return ret ? ret : count;
+}
+
+static ssize_t thermal_limit_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
+{
+	struct infinity_charging_drv *drv = g_charging_drv;
+
+	if (!drv)
+		return -ENODEV;
+
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			drv->thermal_limit_override > 0 ?
+			drv->thermal_limit_override :
+			mode_configs[drv->mode].thermal_limit);
+}
+
+static ssize_t thermal_limit_store(struct kobject *kobj,
+				   struct kobj_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct infinity_charging_drv *drv = g_charging_drv;
+	unsigned long val;
+	int ret;
+
+	if (!drv)
+		return -ENODEV;
+
+	ret = kstrtoul(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val > MAX_THERMAL_LIMIT)
+		return -EINVAL;
+
+	mutex_lock(&drv->lock);
+	drv->thermal_limit_override = (int)val;
+	mutex_unlock(&drv->lock);
 
 	return count;
 }
 
-/* --- status (read-only, human-readable) --- */
-SYSFS_ATTR_RO(status);
+static ssize_t auto_resume_threshold_show(struct kobject *kobj,
+					  struct kobj_attribute *attr,
+					  char *buf)
+{
+	struct infinity_charging_drv *drv = g_charging_drv;
+
+	if (!drv)
+		return -ENODEV;
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", drv->auto_resume_threshold);
+}
+
+static ssize_t auto_resume_threshold_store(struct kobject *kobj,
+					   struct kobj_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct infinity_charging_drv *drv = g_charging_drv;
+	unsigned long val;
+	int ret;
+
+	if (!drv)
+		return -ENODEV;
+
+	ret = kstrtoul(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val > 50)
+		return -EINVAL;
+
+	mutex_lock(&drv->lock);
+	drv->auto_resume_threshold = (int)val;
+	mutex_unlock(&drv->lock);
+
+	return count;
+}
 
 static ssize_t status_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
+			   struct kobj_attribute *attr, char *buf)
 {
-	struct infinity_charge_ctx *ctx = g_ctx;
-	char status[MAX_STATUS_LEN];
+	struct infinity_charging_drv *drv = g_charging_drv;
+	const char *mode_str;
+	char throttled[32] = "";
+	char paused[32] = "";
 
-	if (!ctx)
+	if (!drv)
 		return -ENODEV;
 
-	mutex_lock(&ctx->lock);
-	snprintf(status, sizeof(status),
-		"Mode: %s | Enabled: %s | Limit: %d mA | "
-		"Temp: %d m°C | Cap: %d%% | Cooldown: %s\n",
-		mode_to_str(ctx->mode),
-		ctx->enabled ? "yes" : "no",
-		ctx->active_limit,
-		ctx->batt_temp,
-		ctx->batt_capacity,
-		ctx->thermal_cooldown ? "yes" : "no");
-	mutex_unlock(&ctx->lock);
+	mutex_lock(&drv->lock);
 
-	return scnprintf(buf, PAGE_SIZE, "%s", status);
+	mode_str = mode_configs[drv->mode].label;
+
+	if (drv->thermal_throttled)
+		snprintf(throttled, sizeof(throttled), ", thermal_throttled");
+	if (drv->soc_paused)
+		snprintf(paused, sizeof(paused), ", soc_paused");
+
+	mutex_unlock(&drv->lock);
+
+	return snprintf(buf, PAGE_SIZE,
+			"mode=%s, charging=%s, bypass=%s%s%s\n"
+			"temp=%d, soc=%d%%, voltage=%duV, current=%duA\n",
+			mode_str,
+			drv->is_charging ? "yes" : "no",
+			drv->bypass_active ? "yes" : "no",
+			throttled, paused,
+			drv->battery_temp_mc / 1000,
+			drv->battery_soc,
+			drv->battery_voltage_uv,
+			drv->battery_current_ua);
 }
-
-/* --- battery_temp (read-only) --- */
-SYSFS_ATTR_RO(battery_temp);
 
 static ssize_t battery_temp_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
+				 struct kobj_attribute *attr, char *buf)
 {
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int temp;
+	struct infinity_charging_drv *drv = g_charging_drv;
 
-	if (!ctx)
+	if (!drv)
 		return -ENODEV;
 
-	mutex_lock(&ctx->lock);
-	refresh_battery_status(ctx);
-	temp = ctx->batt_temp;
-	mutex_unlock(&ctx->lock);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", temp);
+	return snprintf(buf, PAGE_SIZE, "%d\n", drv->battery_temp_mc);
 }
 
-/* --- battery_capacity (read-only) --- */
-SYSFS_ATTR_RO(battery_capacity);
-
-static ssize_t battery_capacity_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
+static ssize_t battery_level_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
 {
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int cap;
+	struct infinity_charging_drv *drv = g_charging_drv;
 
-	if (!ctx)
+	if (!drv)
 		return -ENODEV;
 
-	mutex_lock(&ctx->lock);
-	refresh_battery_status(ctx);
-	cap = ctx->batt_capacity;
-	mutex_unlock(&ctx->lock);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", cap);
+	return snprintf(buf, PAGE_SIZE, "%d\n", drv->battery_soc);
 }
 
-/* --- Attribute array --- */
-static struct attribute *charge_attrs[] = {
-	&attr_mode.attr,
-	&attr_enabled.attr,
-	&attr_status.attr,
-	&attr_battery_temp.attr,
-	&attr_battery_capacity.attr,
+/* clang-format off */
+static struct kobj_attribute charging_mode_attr =
+	__ATTR(charging_mode, 0644, charging_mode_show, charging_mode_store);
+static struct kobj_attribute thermal_limit_attr =
+	__ATTR(thermal_limit, 0644, thermal_limit_show, thermal_limit_store);
+static struct kobj_attribute auto_resume_attr =
+	__ATTR(auto_resume_threshold, 0644,
+	       auto_resume_threshold_show, auto_resume_threshold_store);
+static struct kobj_attribute status_attr =
+	__ATTR(status, 0444, status_show, NULL);
+static struct kobj_attribute battery_temp_attr =
+	__ATTR(battery_temp, 0444, battery_temp_show, NULL);
+static struct kobj_attribute battery_level_attr =
+	__ATTR(battery_level, 0444, battery_level_show, NULL);
+
+static struct attribute *infinity_charging_attrs[] = {
+	&charging_mode_attr.attr,
+	&thermal_limit_attr.attr,
+	&auto_resume_attr.attr,
+	&status_attr.attr,
+	&battery_temp_attr.attr,
+	&battery_level_attr.attr,
 	NULL,
 };
+/* clang-format on */
 
-static const struct attribute_group charge_attr_group = {
-	.attrs = charge_attrs,
+static struct attribute_group infinity_charging_attr_group = {
+	.attrs = infinity_charging_attrs,
 };
 
-static struct kobject *charge_kobj;
+/* ------------------------------------------------------------------ */
+/* IOCTL handling (misc device)                                       */
+/* ------------------------------------------------------------------ */
 
-/* ================================================================== */
-/*  Char Device / IOCTL                                                */
-/* ================================================================== */
-
-static dev_t charge_dev_t;
-static struct cdev charge_cdev;
-static struct class *charge_class;
-
-static int charge_open(struct inode *inode, struct file *filp)
+static long icc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	return 0;
-}
-
-static int charge_release(struct inode *inode, struct file *filp)
-{
-	return 0;
-}
-
-static long charge_ioctl(struct file *filp, unsigned int cmd,
-			 unsigned long arg)
-{
-	struct infinity_charge_ctx *ctx = g_ctx;
+	struct infinity_charging_drv *drv = g_charging_drv;
 	void __user *argp = (void __user *)arg;
-	int ret = 0, val;
+	int val;
+	int ret;
 
-	if (!ctx)
+	if (!drv)
 		return -ENODEV;
 
 	switch (cmd) {
-	case IOC_CHARGE_GET_MODE:
-		mutex_lock(&ctx->lock);
-		val = ctx->mode;
-		mutex_unlock(&ctx->lock);
-		if (copy_to_user(argp, &val, sizeof(val)))
-			return -EFAULT;
-		break;
-
-	case IOC_CHARGE_SET_MODE:
+	case INFINITY_CHARGING_SET_MODE:
 		if (copy_from_user(&val, argp, sizeof(val)))
 			return -EFAULT;
-		if (val < 0 || val >= CHARGING_MODE_MAX)
-			return -EINVAL;
-		mutex_lock(&ctx->lock);
-		ctx->mode = val;
-		pr_info("ioctl: mode -> %s\n", mode_to_str(val));
-		apply_charge_limit(ctx);
-		mutex_unlock(&ctx->lock);
-		break;
+		ret = icc_set_mode(drv, (enum infinity_charging_mode)val);
+		return ret;
 
-	case IOC_CHARGE_GET_ENABLED:
-		mutex_lock(&ctx->lock);
-		val = ctx->enabled;
-		mutex_unlock(&ctx->lock);
-		if (copy_to_user(argp, &val, sizeof(val)))
+	case INFINITY_CHARGING_GET_STATUS: {
+		struct infinity_charging_status status;
+
+		mutex_lock(&drv->lock);
+		status.mode = drv->mode;
+		status.battery_voltage = drv->battery_voltage_uv;
+		status.battery_current = drv->battery_current_ua;
+		status.battery_temp = drv->battery_temp_mc;
+		status.is_charging = drv->is_charging;
+		status.thermal_throttled = drv->thermal_throttled;
+		status.bypass_active = drv->bypass_active;
+		mutex_unlock(&drv->lock);
+
+		if (copy_to_user(argp, &status, sizeof(status)))
 			return -EFAULT;
-		break;
-
-	case IOC_CHARGE_SET_ENABLED:
-		if (copy_from_user(&val, argp, sizeof(val)))
-			return -EFAULT;
-		if (val < 0 || val > 1)
-			return -EINVAL;
-		mutex_lock(&ctx->lock);
-		ctx->enabled = (bool)val;
-		pr_info("ioctl: enabled -> %d\n", val);
-		apply_charge_limit(ctx);
-		mutex_unlock(&ctx->lock);
-		break;
-
-	case IOC_CHARGE_GET_STATUS: {
-		struct infinity_charge_info info;
-		char status[MAX_STATUS_LEN];
-
-		mutex_lock(&ctx->lock);
-		refresh_battery_status(ctx);
-		info.mode = ctx->mode;
-		info.enabled = ctx->enabled;
-		info.battery_temp = ctx->batt_temp;
-		info.battery_cap = ctx->batt_capacity;
-		info.current_limit = ctx->active_limit;
-		info.thermal_state = ctx->thermal_cooldown;
-		snprintf(status, sizeof(status),
-			"Mode:%s Enabled:%d Limit:%dmA Temp:%dm°C Cap:%d%%",
-			mode_to_str(info.mode), info.enabled,
-			info.current_limit, info.battery_temp,
-			info.battery_cap);
-		mutex_unlock(&ctx->lock);
-
-		if (copy_to_user(argp, status, min((size_t)MAX_STATUS_LEN,
-						(size_t)_IOC_SIZE(cmd))))
-			return -EFAULT;
-		break;
+		return 0;
 	}
 
-	case IOC_CHARGE_GET_BATT_TEMP:
-		mutex_lock(&ctx->lock);
-		refresh_battery_status(ctx);
-		val = ctx->batt_temp;
-		mutex_unlock(&ctx->lock);
-		if (copy_to_user(argp, &val, sizeof(val)))
+	case INFINITY_CHARGING_SET_THERMAL_LIMIT:
+		if (copy_from_user(&val, argp, sizeof(val)))
 			return -EFAULT;
-		break;
+		if (val > MAX_THERMAL_LIMIT || val < MIN_THERMAL_LIMIT)
+			return -EINVAL;
+		mutex_lock(&drv->lock);
+		drv->thermal_limit_override = val;
+		mutex_unlock(&drv->lock);
+		return 0;
 
-	case IOC_CHARGE_GET_BATT_CAPACITY:
-		mutex_lock(&ctx->lock);
-		refresh_battery_status(ctx);
-		val = ctx->batt_capacity;
-		mutex_unlock(&ctx->lock);
-		if (copy_to_user(argp, &val, sizeof(val)))
+	case INFINITY_CHARGING_SET_AUTO_RESUME:
+		if (copy_from_user(&val, argp, sizeof(val)))
 			return -EFAULT;
-		break;
+		if (val > 50 || val < 0)
+			return -EINVAL;
+		mutex_lock(&drv->lock);
+		drv->auto_resume_threshold = val;
+		mutex_unlock(&drv->lock);
+		return 0;
 
 	default:
+		dev_warn(drv->dev, "unknown ioctl cmd 0x%x\n", cmd);
 		return -ENOTTY;
 	}
-
-	return ret;
 }
 
-static const struct file_operations charge_fops = {
-	.owner          = THIS_MODULE,
-	.open           = charge_open,
-	.release        = charge_release,
-	.unlocked_ioctl = charge_ioctl,
+static const struct file_operations icc_fops = {
+	.owner		= THIS_MODULE,
+	.unlocked_ioctl	= icc_ioctl,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl   = charge_ioctl,
+	.compat_ioctl	= icc_ioctl,
 #endif
 };
 
-/* ================================================================== */
-/*  Kernel-internal API (callable from other subsystems)               */
-/* ================================================================== */
+/* ------------------------------------------------------------------ */
+/* Device tree parsing                                                */
+/* ------------------------------------------------------------------ */
 
-int infinity_charge_get_current_limit(void)
+static int icc_parse_dt(struct platform_device *pdev,
+			struct infinity_charging_drv *drv)
 {
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int limit = 0;
-
-	if (!ctx)
-		return 0;
-
-	mutex_lock(&ctx->lock);
-	limit = ctx->active_limit;
-	mutex_unlock(&ctx->lock);
-	return limit;
-}
-EXPORT_SYMBOL_GPL(infinity_charge_get_current_limit);
-
-int infinity_charge_is_enabled(void)
-{
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int en = 0;
-
-	if (!ctx)
-		return 0;
-
-	mutex_lock(&ctx->lock);
-	en = ctx->enabled;
-	mutex_unlock(&ctx->lock);
-	return en;
-}
-EXPORT_SYMBOL_GPL(infinity_charge_is_enabled);
-
-int infinity_charge_get_mode(void)
-{
-	struct infinity_charge_ctx *ctx = g_ctx;
-	int mode = 0;
-
-	if (!ctx)
-		return 0;
-
-	mutex_lock(&ctx->lock);
-	mode = ctx->mode;
-	mutex_unlock(&ctx->lock);
-	return mode;
-}
-EXPORT_SYMBOL_GPL(infinity_charge_get_mode);
-
-/* ================================================================== */
-/*  Device-Tree Parsing                                                */
-/* ================================================================== */
-
-static void parse_dt_defaults(struct device *dev,
-			      struct infinity_charge_ctx *ctx)
-{
-	struct device_node *np = dev->of_node;
-	u32 val;
+	struct device_node *np = pdev->dev.of_node;
 
 	if (!np)
-		return;
+		return 0;
 
-	/* Thermal thresholds */
-	if (!of_property_read_u32(np, "cooldown-temp-millic", &val))
-		ctx->cooldown_temp = (int)val;
+	of_property_read_u32(np, "default-thermal-limit",
+			     &drv->thermal_limit_override);
+	of_property_read_u32(np, "default-auto-resume",
+			     &drv->auto_resume_threshold);
 
-	if (!of_property_read_u32(np, "resume-temp-millic", &val))
-		ctx->resume_temp = (int)val;
+	/* Validate parsed values */
+	if (drv->thermal_limit_override > MAX_THERMAL_LIMIT)
+		drv->thermal_limit_override = THERMAL_LIMIT_45C;
+	if (drv->auto_resume_threshold > 50 || drv->auto_resume_threshold < 0)
+		drv->auto_resume_threshold = AUTO_RESUME_DEFAULT;
 
-	if (!of_property_read_u32(np, "low-batt-cap-pct", &val))
-		ctx->low_batt_cap = (int)val;
+	dev_info(&pdev->dev,
+		 "DT: thermal_limit=%d, auto_resume=%d\n",
+		 drv->thermal_limit_override,
+		 drv->auto_resume_threshold);
 
-	/* Per-mode charge current limits */
-	if (!of_property_read_u32_index(np, "charge-current-ma",
-			CHARGING_MODE_LIGHT, &val))
-		ctx->current_limits[CHARGING_MODE_LIGHT] = (int)val;
-
-	if (!of_property_read_u32_index(np, "charge-current-ma",
-			CHARGING_MODE_BALANCED, &val))
-		ctx->current_limits[CHARGING_MODE_BALANCED] = (int)val;
-
-	if (!of_property_read_u32_index(np, "charge-current-ma",
-			CHARGING_MODE_EXTREME, &val))
-		ctx->current_limits[CHARGING_MODE_EXTREME] = (int)val;
-
-	if (!of_property_read_u32_index(np, "charge-current-ma",
-			CHARGING_MODE_ULTRA, &val))
-		ctx->current_limits[CHARGING_MODE_ULTRA] = (int)val;
-
-	dev_info(dev, "DT config: cooldown=%d m°C  resume=%d m°C  "
-		 "low_cap=%d%%  currents=[%d,%d,%d,%d] mA\n",
-		 ctx->cooldown_temp, ctx->resume_temp,
-		 ctx->low_batt_cap,
-		 ctx->current_limits[CHARGING_MODE_LIGHT],
-		 ctx->current_limits[CHARGING_MODE_BALANCED],
-		 ctx->current_limits[CHARGING_MODE_EXTREME],
-		 ctx->current_limits[CHARGING_MODE_ULTRA]);
+	return 0;
 }
 
-/* ================================================================== */
-/*  Platform Driver Probe / Remove                                     */
-/* ================================================================== */
+/* ------------------------------------------------------------------ */
+/* Platform driver probe / remove                                     */
+/* ------------------------------------------------------------------ */
 
-static int infinity_charge_probe(struct platform_device *pdev)
+static int icc_probe(struct platform_device *pdev)
 {
-	struct infinity_charge_ctx *ctx;
-	struct device *dev = &pdev->dev;
+	struct infinity_charging_drv *drv;
 	int ret;
 
-	/* Allocate context */
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
+	drv = devm_kzalloc(&pdev->dev, sizeof(*drv), GFP_KERNEL);
+	if (!drv)
 		return -ENOMEM;
 
+	drv->dev = &pdev->dev;
+	mutex_init(&drv->lock);
+
 	/* Defaults */
-	ctx->cooldown_temp = CHARGE_COOLDOWN_TEMP;
-	ctx->resume_temp   = CHARGE_RESUME_TEMP;
-	ctx->low_batt_cap  = CHARGE_LOW_BATT_CAP;
-	ctx->current_limits[CHARGING_MODE_DISABLED] = 0;
-	ctx->current_limits[CHARGING_MODE_LIGHT]    = CHARGE_CURRENT_LIGHT;
-	ctx->current_limits[CHARGING_MODE_BALANCED]  = CHARGE_CURRENT_BALANCED;
-	ctx->current_limits[CHARGING_MODE_EXTREME]   = CHARGE_CURRENT_EXTREME;
-	ctx->current_limits[CHARGING_MODE_ULTRA]     = CHARGE_CURRENT_ULTRA;
-	ctx->mode       = CHARGING_MODE_BALANCED;
-	ctx->enabled    = false;
-	ctx->thermal_cooldown = false;
-	ctx->batt_temp  = 25000;  /* sane default until first read */
-	ctx->batt_capacity = 50;
-	ctx->active_limit = 0;
-	ctx->dev       = dev;
+	drv->mode = CHARGING_MODE_OFF;
+	drv->thermal_limit_override = 0; /* use mode default */
+	drv->auto_resume_threshold = AUTO_RESUME_DEFAULT;
+	drv->original_current_ua = DEFAULT_INPUT_CURRENT_UA;
+	drv->effective_current_ua = DEFAULT_INPUT_CURRENT_UA;
+	drv->is_charging = true;
+	drv->bypass_active = false;
+	drv->thermal_throttled = false;
+	drv->soc_paused = false;
+	drv->monitor_running = false;
 
-	mutex_init(&ctx->lock);
-	INIT_DELAYED_WORK(&ctx->poll_work, poll_worker);
-
-	/* Override defaults from DT */
-	parse_dt_defaults(dev, ctx);
-
-	/* Store global singleton */
-	g_ctx = ctx;
-
-	/* --- sysfs --- */
-	charge_kobj = kobject_create_and_add(SYSFS_DIR_NAME, kernel_kobj);
-	if (!charge_kobj) {
-		dev_err(dev, "failed to create sysfs kobject\n");
-		ret = -ENOMEM;
-		goto err_sysfs;
-	}
-	ret = sysfs_create_group(charge_kobj, &charge_attr_group);
+	/* Parse device tree */
+	ret = icc_parse_dt(pdev, drv);
 	if (ret) {
-		dev_err(dev, "failed to create sysfs group: %d\n", ret);
-		goto err_sysfs_group;
-	}
-
-	/* --- char device --- */
-	ret = alloc_chrdev_region(&charge_dev_t, 0, 1, CHARDEV_NAME);
-	if (ret) {
-		dev_err(dev, "alloc_chrdev_region failed: %d\n", ret);
-		goto err_cdev_region;
-	}
-
-	cdev_init(&charge_cdev, &charge_fops);
-	charge_cdev.owner = THIS_MODULE;
-	ret = cdev_add(&charge_cdev, charge_dev_t, 1);
-	if (ret) {
-		dev_err(dev, "cdev_add failed: %d\n", ret);
-		goto err_cdev_add;
-	}
-
-	charge_class = class_create(THIS_MODULE, DRIVER_CLASS_NAME);
-	if (IS_ERR(charge_class)) {
-		dev_err(dev, "class_create failed\n");
-		ret = PTR_ERR(charge_class);
-		goto err_class;
-	}
-
-	if (!device_create(charge_class, NULL, charge_dev_t,
-			   NULL, CHARDEV_NAME)) {
-		dev_err(dev, "device_create failed\n");
-		ret = -ENOMEM;
-		goto err_device;
-	}
-
-	/* --- Start periodic monitoring --- */
-	schedule_delayed_work(&ctx->poll_work,
-			msecs_to_jiffies(POLL_INTERVAL_MS));
-
-	/* Initial battery read */
-	refresh_battery_status(ctx);
-
-	platform_set_drvdata(pdev, ctx);
-	dev_info(dev, "Infinity Charging Bypass loaded – mode=%s enabled=%d\n",
-		 mode_to_str(ctx->mode), ctx->enabled);
-
-	return 0;
-
-err_device:
-	class_destroy(charge_class);
-err_class:
-	cdev_del(&charge_cdev);
-err_cdev_add:
-	unregister_chrdev_region(charge_dev_t, 1);
-err_cdev_region:
-	sysfs_remove_group(charge_kobj, &charge_attr_group);
-err_sysfs_group:
-	kobject_put(charge_kobj);
-err_sysfs:
-	g_ctx = NULL;
-	mutex_destroy(&ctx->lock);
-	return ret;
-}
-
-static int infinity_charge_remove(struct platform_device *pdev)
-{
-	struct infinity_charge_ctx *ctx = platform_get_drvdata(pdev);
-
-	cancel_delayed_work_sync(&ctx->poll_work);
-
-	device_destroy(charge_class, charge_dev_t);
-	class_destroy(charge_class);
-	cdev_del(&charge_cdev);
-	unregister_chrdev_region(charge_dev_t, 1);
-
-	sysfs_remove_group(charge_kobj, &charge_attr_group);
-	kobject_put(charge_kobj);
-
-	g_ctx = NULL;
-	mutex_destroy(&ctx->lock);
-
-	dev_info(&pdev->dev, "Infinity Charging Bypass removed\n");
-	return 0;
-}
-
-/* ================================================================== */
-/*  PM Suspend / Resume                                                */
-/* ================================================================== */
-
-static int infinity_charge_suspend(struct device *dev)
-{
-	struct infinity_charge_ctx *ctx = dev_get_drvdata(dev);
-
-	cancel_delayed_work_sync(&ctx->poll_work);
-	return 0;
-}
-
-static int infinity_charge_resume(struct device *dev)
-{
-	struct infinity_charge_ctx *ctx = dev_get_drvdata(dev);
-
-	mutex_lock(&ctx->lock);
-	refresh_battery_status(ctx);
-	apply_charge_limit(ctx);
-	mutex_unlock(&ctx->lock);
-
-	schedule_delayed_work(&ctx->poll_work,
-			msecs_to_jiffies(POLL_INTERVAL_MS));
-	return 0;
-}
-
-static const struct dev_pm_ops infinity_charge_pm_ops = {
-	.suspend = infinity_charge_suspend,
-	.resume  = infinity_charge_resume,
-};
-
-/* ================================================================== */
-/*  OF Match Table                                                     */
-/* ================================================================== */
-
-static const struct of_device_id infinity_charge_of_match[] = {
-	{ .compatible = "infinity,charging-control", },
-	{ .compatible = "qcom,sm7150-charging-control", },
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(of, infinity_charge_of_match);
-
-/* ================================================================== */
-/*  Platform Driver Struct                                             */
-/* ================================================================== */
-
-static struct platform_driver infinity_charge_driver = {
-	.probe  = infinity_charge_probe,
-	.remove = infinity_charge_remove,
-	.driver = {
-		.name           = DRIVER_NAME,
-		.of_match_table = infinity_charge_of_match,
-		.pm             = &infinity_charge_pm_ops,
-	},
-};
-
-/* ================================================================== */
-/*  Module Init / Exit                                                 */
-/* ================================================================== */
-
-static int __init infinity_charge_init(void)
-{
-	int ret;
-
-	ret = platform_driver_register(&infinity_charge_driver);
-	if (ret) {
-		pr_err("driver registration failed: %d\n", ret);
+		dev_err(&pdev->dev, "DT parse failed: %d\n", ret);
 		return ret;
 	}
 
-	pr_info("module loaded (v1.0 – Poco X3 Pro / SD732G)\n");
+	/* Acquire power supply references early */
+	drv->battery_psy = power_supply_get_by_name("battery");
+	if (!drv->battery_psy) {
+		/* Not fatal — may appear later via monitor_work */
+		dev_warn(&pdev->dev,
+			 "battery power_supply not yet available\n");
+	}
+	drv->charger_psy = power_supply_get_by_name("battery");
+
+	/* Read initial battery state */
+	icc_read_battery_status(drv);
+
+	/* Register misc device for IOCTL */
+	drv->miscdev.minor = MISC_DYNAMIC_MINOR;
+	drv->miscdev.name = "infinity-charging";
+	drv->miscdev.fops = &icc_fops;
+	drv->miscdev.parent = &pdev->dev;
+
+	ret = misc_register(&drv->miscdev);
+	if (ret) {
+		dev_err(&pdev->dev, "misc_register failed: %d\n", ret);
+		return ret;
+	}
+
+	/* Create sysfs kobject under /sys/kernel/infinity_charging */
+	drv->sysfs_kobj = kobject_create_and_add("infinity_charging",
+						 kernel_kobj);
+	if (!drv->sysfs_kobj) {
+		dev_err(&pdev->dev, "sysfs kobject create failed\n");
+		ret = -ENOMEM;
+		goto err_misc;
+	}
+
+	ret = sysfs_create_group(drv->sysfs_kobj, &infinity_charging_attr_group);
+	if (ret) {
+		dev_err(&pdev->dev, "sysfs group create failed: %d\n", ret);
+		goto err_kobj;
+	}
+
+	/* Initialize and schedule the monitoring delayed work */
+	INIT_DELAYED_WORK(&drv->monitor_work, icc_monitor_work_fn);
+	drv->monitor_running = true;
+	g_charging_drv = drv;
+
+	schedule_delayed_work(&drv->monitor_work,
+			      msecs_to_jiffies(THERMAL_MONITOR_INTERVAL_MS));
+
+	platform_set_drvdata(pdev, drv);
+
+	dev_info(&pdev->dev,
+		 "Infinity Charging Control v1.0 initialized\n");
+	dev_info(&pdev->dev,
+		 "  default current: %d uA, auto-resume: %d%%\n",
+		 drv->original_current_ua, drv->auto_resume_threshold);
+
+	return 0;
+
+err_kobj:
+	kobject_put(drv->sysfs_kobj);
+err_misc:
+	misc_deregister(&drv->miscdev);
+	return ret;
+}
+
+static int icc_remove(struct platform_device *pdev)
+{
+	struct infinity_charging_drv *drv = platform_get_drvdata(pdev);
+
+	if (!drv)
+		return 0;
+
+	/* Stop monitoring */
+	mutex_lock(&drv->lock);
+	drv->monitor_running = false;
+	mutex_unlock(&drv->lock);
+	cancel_delayed_work_sync(&drv->monitor_work);
+
+	/* Re-enable charging before unloading */
+	if (!drv->is_charging) {
+		union power_supply_propval val;
+		val.intval = POWER_SUPPLY_CHARGE_TYPE_FAST;
+		icc_set_charger_property(drv, POWER_SUPPLY_PROP_CHARGE_TYPE, &val);
+		val.intval = drv->original_current_ua;
+		icc_set_charger_property(drv,
+					 POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+					 &val);
+	}
+
+	/* Tear down sysfs and misc device */
+	sysfs_remove_group(drv->sysfs_kobj, &infinity_charging_attr_group);
+	kobject_put(drv->sysfs_kobj);
+	misc_deregister(&drv->miscdev);
+
+	/* Release power supply references */
+	if (drv->battery_psy)
+		power_supply_put(drv->battery_psy);
+	if (drv->charger_psy)
+		power_supply_put(drv->charger_psy);
+
+	g_charging_drv = NULL;
+	mutex_destroy(&drv->lock);
+
+	dev_info(&pdev->dev, "Infinity Charging Control removed\n");
 	return 0;
 }
 
-static void __exit infinity_charge_exit(void)
-{
-	platform_driver_unregister(&infinity_charge_driver);
-	pr_info("module unloaded\n");
-}
+/* ------------------------------------------------------------------ */
+/* OF match table                                                     */
+/* ------------------------------------------------------------------ */
 
-module_init(infinity_charge_init);
-module_exit(infinity_charge_exit);
+static const struct of_device_id icc_of_match[] = {
+	{ .compatible = "infinity,charging-control" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, icc_of_match);
+
+/* ------------------------------------------------------------------ */
+/* Platform driver definition                                         */
+/* ------------------------------------------------------------------ */
+
+struct platform_driver infinity_charging_driver = {
+	.probe	= icc_probe,
+	.remove	= icc_remove,
+	.driver	= {
+		.name		= "infinity-charging",
+		.of_match_table	= icc_of_match,
+	},
+};
+EXPORT_SYMBOL_GPL(infinity_charging_driver);
+
+module_platform_driver(infinity_charging_driver);
 
 MODULE_LICENSE("GPL v2");
-MODULE_AUTHOR("Infinity Kernel Team");
-MODULE_DESCRIPTION("Infinity Charging Bypass Control Driver");
+MODULE_AUTHOR("Infinity Kernel");
+MODULE_DESCRIPTION("Infinity Kernel Charging Bypass Control v1.0");
 MODULE_VERSION("1.0");
-MODULE_ALIAS("platform:" DRIVER_NAME);
+MODULE_ALIAS("platform:infinity-charging");

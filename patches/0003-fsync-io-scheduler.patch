@@ -1,7 +1,7 @@
 From 3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c Mon Sep 17 00:00:00 2001
 From: Infinity Kernel <infinity@vayu>
 Date: Sat, 1 Jan 2024 00:00:00 +0000
-Subject: [PATCH 3/6] fsync: add ftrace probes and I/O tracking support
+Subject: [PATCH 3/12] fsync: add ftrace probes and I/O tracking support
 
 - Add FSYNC syscall ftrace probe definitions in fs.h
 - Implement ftrace tracepoints in fs/sync.c for fsync/fdatasync/msync
