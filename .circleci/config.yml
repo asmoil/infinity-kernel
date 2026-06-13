@@ -13,7 +13,7 @@ jobs:
       CROSS_COMPILE: aarch64-linux-gnu-
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
-      ZIP_NAME: InfinityKernel-v1.0.2-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.4-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -46,6 +46,16 @@ jobs:
                 echo "ERROR: clang not found after clone"
                 exit 1
               fi
+
+              # Proton Clang ships llvm-as as 'as' — it lacks -EL flag.
+              # Host tools (scripts/mod, scripts/dtc) need GNU as/ld/ar.
+              # Rename LLVM host tools so system GNU binutils are used instead.
+              for tool in as ar ld nm objcopy objdump ranlib strip; do
+                if [ -f "$PROTON_PATH/bin/$tool" ]; then
+                  mv "$PROTON_PATH/bin/$tool" "$PROTON_PATH/bin/$tool.llvm"
+                fi
+              done
+              echo "Renamed Proton Clang host tools to *.llvm"
             fi
             echo "Proton Clang ready:"
             "$PROTON_PATH/bin/clang" --version | head -1
@@ -84,6 +94,12 @@ jobs:
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
 
+            # Verify: clang from Proton, as from GNU cross-tools
+            echo "CC: $(which clang)"
+            echo "AS: $(which as)"
+            echo "LD: $(which ld)"
+            aarch64-linux-gnu-as --version | head -1
+
             scripts/kconfig/merge_config.sh \
               arch/arm64/configs/vayu_defconfig \
               arch/arm64/configs/infinity_defconfig \
@@ -94,6 +110,8 @@ jobs:
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-I/usr/include" \
                  O=out \
                  infinity_defconfig
 
@@ -101,6 +119,8 @@ jobs:
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
                  CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-I/usr/include" \
                  O=out \
                  2>&1 | tee build.log
 
@@ -135,12 +155,12 @@ jobs:
 
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.2-vayu.zip
-          destination: InfinityKernel-v1.0.2-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.4-vayu.zip
+          destination: InfinityKernel-v1.0.4-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.2-vayu.zip
+            - InfinityKernel-v1.0.4-vayu.zip
 
 workflows:
   build-kernel:

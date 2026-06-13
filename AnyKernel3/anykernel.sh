@@ -1,5 +1,5 @@
 ## AnyKernel3 flash script for Infinity Kernel
-## Poco X3 Pro (vayu/bhima) — SM7325
+## Poco X3 Pro (vayu/bhima) — SM8250-AC
 ## Supports: MIUI / HyperOS / Any Custom ROM
 ## Compatible: KernelSU / KSU Next / Magisk / APatch / ReSukiSu / SukiSU Ultra
 
@@ -7,7 +7,7 @@
 # AnyKernel3 Header
 ###############################################
 properties() {
-    kernel_string="Infinity Kernel v1.0.2 | SM7325 | Proton Clang 17"
+    kernel_string="Infinity Kernel v1.0.4 | SM8250-AC | Proton Clang 17"
     do.devicecheck=1
     do.systemless=1
     do.modules=0
@@ -213,14 +213,14 @@ install_kernel() {
 post_install() {
     ui_print " "
     ui_print "  ========================================"
-    ui_print "    Infinity Kernel v1.0.2 — Installed!"
+    ui_print "    Infinity Kernel v1.0.4 — Installed!"
     ui_print "    ROM: $ROM_TYPE $ROM_VERSION"
     ui_print "    Root: $ROOT_MANAGER"
     ui_print "    Device: $(getprop ro.product.device)"
     ui_print "  ========================================"
     ui_print " "
     ui_print "  Features:"
-    ui_print "  - CPU: Tuned SM7325 (balanced perf/battery)"
+    ui_print "  - CPU: Tuned SM8250-AC (balanced perf/battery)"
     ui_print "  - GPU: Adreno 618 optimized"
     ui_print "  - IO: FSYNC + Maple/BFQ scheduler"
     ui_print "  - TCP: BBR congestion control"
