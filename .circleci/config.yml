@@ -83,6 +83,13 @@ jobs:
                 echo "Renamed: $tool -> ${tool}.llvm"
               fi
             done
+            # Create an 'ld' symlink to ld.lld so that Clang finds lld (aarch64-capable)
+            # instead of falling back to the host's x86-only /usr/bin/ld when linking
+            # the VDSO shared library.
+            if [ -f ld.lld ] && [ ! -e ld ]; then
+              ln -sf ld.lld ld
+              echo "Created ld -> ld.lld symlink"
+            fi
             echo "Host tools fix complete"
 
       - run:
