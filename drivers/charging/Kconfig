@@ -1,17 +1,8 @@
 config CHARGING_CONTROL
-	tristate "Infinity Charging Control Driver"
-	depends on POWER_SUPPLY && SYSFS
-	default m
-	help
-	  Infinity Kernel charging control for SM8250-AC (Snapdragon 860).
-	  Provides 4 charging modes: Normal, Balance, Performance, Game.
-	  Also supports charging bypass (discharge while plugged in).
-	  
-	  Modes:
-	  - Normal: Default charging behavior
-	  - Balance: Reduced charge current, extended battery life
-	  - Performance: Full speed charging with thermal limits
-	  - Game: Bypass charging - runs on wall power without charging battery
-	  
-	  Control via /sys/class/power_supply/battery/charging_mode
-	  or via IOCTL through /dev/infinity_charging.
+    tristate "Infinity Charging Control (Gaming Bypass)"
+    default y
+    depends on POWER_SUPPLY && THERMAL
+    help
+      Infinity Kernel charging bypass control for gaming.
+      Supports 4 modes (LIGHT/BALANCED/EXTREME/ULTRA) with
+      thermal monitoring and auto-resume.

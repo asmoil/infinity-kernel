@@ -1,294 +1,331 @@
-# Infinity Kernel v1.0.21
-# Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
-# Proton Clang 17 | AnyKernel3 | MIT License
 version: 2.1
 
 jobs:
   build:
     docker:
       - image: ubuntu:22.04
+    environment:
+      PROJECT_DIR: /tmp/infinity-kernel-build
+      KERNEL_DIR: /tmp/infinity-kernel-build/kernel_src
+      PROTON_PATH: /tmp/infinity-kernel-build/proton-clang
+      ARCH: arm64
+      SUBARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      CC: clang
+      CLANG_TRIPLE: aarch64-linux-gnu-
+      GIT_TERMINAL_PROMPT: 0
+      ZIP_NAME: InfinityKernel-v1.0.22-vayu.zip
+    resource_class: large
     steps:
       - checkout
-
-      # ── Шаг 1: Установка зависимостей ──────────────────────────
       - run:
-          name: "Установка зависимостей"
+          name: Setup build directory
           command: |
-            apt-get update
+            mkdir -p "$PROJECT_DIR"
+            cp -a /root/project/. "$PROJECT_DIR/"
+      - run:
+          name: Install build dependencies
+          command: |
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
             apt-get install -y \
-              bc bison build-essential ccache curl flex \
-              git gnupg gperf imagemagick \
-              libelf-dev liblz4-tool libncurses5-dev \
-              libssl-dev libxml2 libxml2-utils lzop \
-              rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
-              gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-              python-is-python3
+              git wget unzip curl bc bison build-essential cpio \
+              flex g++ gcc-aarch64-linux-gnu libc6-dev-i386 \
+              libelf-dev libssl-dev python3 python3-pip zstd \
+              liblz4-tool device-tree-compiler rsync file \
+              make binutils
 
-      # ── Шаг 2: Клонирование Proton Clang 17 + подготовка bin ───
+            # Linux 4.14 uses 'python' — symlink to python3
+            ln -sf /usr/bin/python3 /usr/bin/python
+            python --version
       - run:
-          name: "Клонирование Proton Clang 17"
+          name: Clone Proton Clang toolchain
+          no_output_timeout: 20m
           command: |
-            CLANG_DIR="/tmp/infinity-kernel-build/proton-clang"
-            if [ ! -d "$CLANG_DIR" ]; then
-              mkdir -p /tmp/infinity-kernel-build
-              git clone https://github.com/kdrag0n/proton-clang "$CLANG_DIR"
-            fi
+            cd "$PROJECT_DIR"
+            if [ ! -x "$PROTON_PATH/bin/clang" ]; then
+              echo "Cloning Proton Clang..."
+              git clone --depth=1 \
+                https://github.com/kdrag0n/proton-clang.git \
+                "$PROTON_PATH"
 
-            # === Подготовка bin/ directory ===
-            # 1. Удаляем x86_64 GNU as — Clang 17 использует integrated assembler
-            rm -f "$CLANG_DIR/bin/as"
-
-            # 2. Удаляем x86_64 GNU ld (если есть) — он не умеет arm64
-            #    и создаём symlink ld → ld.lld (LLVM linker, поддерживает arm64)
-            if [ -e "$CLANG_DIR/bin/ld" ]; then
-              rm -f "$CLANG_DIR/bin/ld"
-            fi
-            ln -sf ld.lld "$CLANG_DIR/bin/ld"
-
-            # 3. Создаём symlinks clang-13, clang-14, ... → clang
-            #    VDSO Makefile в ядре Xiaomi вызывает clang-13 напрямую
-            for v in 13 14 15 16 17; do
-              ln -sf clang "$CLANG_DIR/bin/clang-$v"
-            done
-
-            echo "=== Проверка инструментов ==="
-            echo "clang:   $(ls -la "$CLANG_DIR/bin/clang")"
-            echo "clang-13: $(ls -la "$CLANG_DIR/bin/clang-13")"
-            echo "ld:      $(ls -la "$CLANG_DIR/bin/ld")"
-            echo "ld.lld:  $(ls -la "$CLANG_DIR/bin/ld.lld")"
-            echo "============================="
-
-      # ── Шаг 3: Определение SRC_ROOT ────────────────────────────
-      - run:
-          name: "Определение SRC_ROOT"
-          command: |
-            if [ -f "arch/arm64/configs/infinity_defconfig" ]; then
-              echo 'export SRC_ROOT="."' >> "$BASH_ENV"
-            elif [ -d "infinity-kernel" ] && [ -f "infinity-kernel/arch/arm64/configs/infinity_defconfig" ]; then
-              echo 'export SRC_ROOT="infinity-kernel"' >> "$BASH_ENV"
-            else
-              echo "FATAL: infinity_defconfig не найден"
-              find . -name "infinity_defconfig" 2>/dev/null || true
-              exit 1
-            fi
-            echo "SRC_ROOT=$SRC_ROOT"
-
-      # ── Шаг 4: Клонирование исходников ядра ────────────────────
-      - run:
-          name: "Клонирование исходников ядра (vayu-r-oss)"
-          command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            if [ ! -d "$KERNEL_SRC/.git" ]; then
-              git clone --depth=1 --branch vayu-r-oss \
-                https://github.com/negrroo/Xiaomi_Kernel_OpenSource \
-                "$KERNEL_SRC"
-            fi
-            echo "KERNEL_SRC=$KERNEL_SRC"
-
-      # ── Шаг 5: Копирование файлов проекта в исходники ──────────
-      - run:
-          name: "Копирование infinity kernel файлов"
-          command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            echo "SRC_ROOT=$SRC_ROOT"
-
-            cp -rv "$SRC_ROOT/arch/arm64/configs/infinity_defconfig" \
-                    "$KERNEL_SRC/arch/arm64/configs/infinity_defconfig"
-
-            if [ -d "$SRC_ROOT/drivers/charging" ]; then
-              cp -rv "$SRC_ROOT/drivers/charging" "$KERNEL_SRC/drivers/charging"
-            fi
-            if ! grep -q "source \"drivers/charging/Kconfig\"" "$KERNEL_SRC/drivers/Kconfig" 2>/dev/null; then
-              echo 'source "drivers/charging/Kconfig"' >> "$KERNEL_SRC/drivers/Kconfig"
-            fi
-            if ! grep -q "obj-\$(CONFIG_CHARGING_CONTROL)" "$KERNEL_SRC/drivers/Makefile" 2>/dev/null; then
-              echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> "$KERNEL_SRC/drivers/Makefile"
-            fi
-
-            if [ -d "$SRC_ROOT/patches" ]; then
-              cp -rv "$SRC_ROOT/patches" "$KERNEL_SRC/patches"
-            fi
-
-            echo "Файлы скопированы."
-
-      # ── Шаг 6: Конфигурация ───────────────────────────────────
-      - run:
-          name: "Конфигурация ядра (defconfig + merge + sed fixes)"
-          command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            cd "$KERNEL_SRC"
-
-            make ARCH=arm64 vayu_user_defconfig O=out
-
-            scripts/kconfig/merge_config.sh -m out/.config \
-              arch/arm64/configs/infinity_defconfig || true
-
-            make ARCH=arm64 olddefconfig O=out </dev/null || true
-
-            # Отключение Clang-несовместимых подсистем
-            for cfg in \
-              CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE \
-              CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST \
-              CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND; do
-              sed -i "s/^${cfg}=y/# ${cfg} is not set/" out/.config
-              sed -i "s/^${cfg}=m/# ${cfg} is not set/" out/.config
-            done
-
-            # Отключение stack-protector (Clang 17 не поддерживает)
-            sed -i 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' out/.config
-            sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' out/.config
-            grep -q "^CONFIG_CC_STACKPROTECTOR_NONE=y" out/.config || \
-              echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
-
-            make ARCH=arm64 olddefconfig O=out </dev/null || true
-
-            echo "Конфигурация готова."
-
-      # ── Шаг 7: Патчи OpenSSL 3.0 ──────────────────────────────
-      - run:
-          name: "Патчи OpenSSL 3.0 (Ubuntu 22.04)"
-          command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            if [ -f "$KERNEL_SRC/certs/extract-cert.c" ]; then
-              sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' \
-                "$KERNEL_SRC/certs/extract-cert.c"
-            fi
-            if [ -f "$KERNEL_SRC/scripts/sign-file.c" ]; then
-              sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' \
-                "$KERNEL_SRC/scripts/sign-file.c"
-            fi
-            echo "OpenSSL патчи применены."
-
-      # ── Шаг 8: Применение исходных патчей + SUFS ──────────────
-      - run:
-          name: "Применение патчей (apply_all.sh) + SUFS"
-          command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            cd "$KERNEL_SRC"
-
-            if [ -f patches/apply_all.sh ]; then
-              bash patches/apply_all.sh
-            fi
-
-            if grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null; then
-              echo "SUFS_FS уже в .config"
-            else
-              if find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q .; then
-                echo "CONFIG_SUFS_FS=y" >> out/.config
-                echo "CONFIG_SUFS=y" >> out/.config
-                echo "SUFS_FS добавлен в .config"
+              if [ ! -x "$PROTON_PATH/bin/clang" ]; then
+                echo "ERROR: clang not found after clone"
+                exit 1
               fi
+
+              # CRITICAL: Remove 'as' so host tools use GNU as (/usr/bin/as)
+              # Proton's 'as' is llvm-as which lacks -EL flag needed by 4.14
+              rm -f "$PROTON_PATH/bin/as"
+
+              # CRITICAL: Replace 'ld' with ld.lld symlink
+              # VDSO Makefile calls /path/to/ld directly — must be lld for aarch64
+              rm -f "$PROTON_PATH/bin/ld"
+              ln -sf ld.lld "$PROTON_PATH/bin/ld"
+
+              # CRITICAL: VDSO Makefile hardcodes 'clang-13' — symlink to our clang
+              for v in 13 14 15 16 17; do
+                ln -sf clang "$PROTON_PATH/bin/clang-$v"
+              done
+
+              echo "Proton Clang symlinks configured:"
+              ls -la "$PROTON_PATH/bin/"{clang,clang-13,ld,as} 2>/dev/null || true
+            fi
+            echo "Proton Clang ready:"
+            "$PROTON_PATH/bin/clang" --version | head -1
+            echo "ld.lld: $($PROTON_PATH/bin/ld.lld --version 2>&1 | head -1)"
+      - run:
+          name: Clone Xiaomi kernel source (vayu-r-oss)
+          no_output_timeout: 20m
+          command: |
+            cd "$PROJECT_DIR"
+            if [ -d "$KERNEL_DIR/.git" ]; then
+              echo "Kernel source already cloned, skipping..."
+            else
+              echo "Cloning Xiaomi kernel source..."
+              git clone --depth=1 -b vayu-r-oss \
+                https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
+                "$KERNEL_DIR" || {
+                echo "FATAL: Failed to clone kernel source"
+                echo "URL: https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git"
+                echo "Branch: vayu-r-oss"
+                exit 1
+              }
+            fi
+            echo "Kernel source ready: $(ls "$KERNEL_DIR/Makefile" >/dev/null && echo OK || echo MISSING)"
+      - run:
+          name: Fix OpenSSL 3.0 compatibility (extract-cert, sign-file)
+          command: |
+            cd "$KERNEL_DIR"
+
+            # Linux 4.14 uses deprecated OpenSSL APIs removed in 3.0
+            # Add suppression define before any #include <openssl/...>
+            for f in scripts/extract-cert.c scripts/sign-file.c; do
+              if [ -f "$f" ] && ! grep -q 'OPENSSL_SUPPRESS_DEPRECATED' "$f"; then
+                sed -i '1i\#define OPENSSL_SUPPRESS_DEPRECATED 1' "$f"
+                echo "Patched $f"
+              fi
+            done
+      - run:
+          name: Copy Infinity Kernel defconfig
+          command: |
+            cp "$PROJECT_DIR/arch/arm64/configs/infinity_defconfig" \
+               "$KERNEL_DIR/arch/arm64/configs/infinity_defconfig"
+      - run:
+          name: Apply kernel patches
+          command: |
+            bash "$PROJECT_DIR/patches/apply_all.sh" "$KERNEL_DIR"
+      - run:
+          name: Integrate charging driver
+          command: |
+            cd "$KERNEL_DIR"
+
+            cp -r "$PROJECT_DIR/drivers/charging" drivers/infinity_charging
+            cp "$PROJECT_DIR/include/linux/infinity_charging_control.h" include/linux/
+            mkdir -p scripts/charging_bypass
+            cp "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" scripts/charging_bypass/
+
+            echo 'obj-y += infinity_charging/' >> drivers/Makefile
+            echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
+      - run:
+          name: Configure kernel (defconfig + merge + olddefconfig)
+          command: |
+            cd "$KERNEL_DIR"
+
+            # CRITICAL: Put proton-clang/bin FIRST in PATH
+            # VDSO Makefile overrides CC to bare 'clang' / 'clang-13' —
+            # PATH must resolve to our proton-clang, not system clang-13
+            export PATH="$PROTON_PATH/bin:$PATH"
+            export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
+
+            # Verify toolchain resolution
+            echo "=== Toolchain verification ==="
+            echo "clang:     $(which clang) ($(clang --version 2>&1 | head -1))"
+            echo "clang-13:  $(which clang-13)"
+            echo "ld:        $(which ld) ($(ld --version 2>&1 | head -1))"
+            echo "as:        $(which as) ($(as --version 2>&1 | head -1))"
+            echo "CROSS:     $(which aarch64-linux-gnu-gcc)"
+            echo "HOSTCC:    $(which gcc)"
+            echo ""
+
+            # Clean any stale config
+            rm -f .config
+            rm -rf out/
+
+            # Use vayu_defconfig as base (or vayu_user_defconfig if available)
+            BASE_DEFCONFIG="vayu_defconfig"
+            if [ -f "arch/arm64/configs/vayu_user_defconfig" ]; then
+              BASE_DEFCONFIG="vayu_user_defconfig"
+              echo "Using vayu_user_defconfig as base"
+            else
+              echo "Using vayu_defconfig as base"
             fi
 
-            make ARCH=arm64 olddefconfig O=out </dev/null || true
+            # Merge infinity_defconfig fragment on top of base
+            echo "Merging infinity_defconfig on top of $BASE_DEFCONFIG..."
+            scripts/kconfig/merge_config.sh \
+              arch/arm64/configs/${BASE_DEFCONFIG} \
+              arch/arm64/configs/infinity_defconfig \
+              -O out/ \
+              </dev/null || true
 
-            echo "Патчи применены."
+            # Disable stack protector (Clang 17 + 4.14 = broken)
+            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR 2>/dev/null || true
+            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_STRONG 2>/dev/null || true
+            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_NONE 2>/dev/null || true
+            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_REGULAR 2>/dev/null || true
+            ./scripts/config --file out/.config --disable CONFIG_STACKPROTECTOR 2>/dev/null || true
 
-      # ── Шаг 9: Очистка исходного дерева ────────────────────────
+            # Disable Clang-incompatible subsystems
+            echo "Disabling Clang-incompatible configs..."
+            for cfg in \
+              CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
+              CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
+              CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
+              CONFIG_V4L_MEM2MEM_DRIVERS CONFIG_RADIO_ADAPTERS \
+              CONFIG_SOUND CONFIG_SND CONFIG_SND_SOC \
+              CONFIG_DRM_LEGACY CONFIG_AGP \
+              CONFIG_INFINIBAND CONFIG_FAULT_INJECTION \
+              CONFIG_SAMPLES CONFIG_COMEDI \
+              CONFIG_STAGING CONFIG_VT \
+              CONFIG_FB \
+              CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
+              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD; do
+              ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
+            done
+
+            # Run olddefconfig
+            # CRITICAL: </dev/null prevents SIGPIPE 141 exit code on 4.14
+            # || true prevents build abort if olddefconfig hits warnings
+            make ARCH=$ARCH SUBARCH=$SUBARCH \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CC=clang \
+                 CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+                 O=out \
+                 olddefconfig \
+                 </dev/null || true
+
+            echo "=== Config done ==="
+            echo "SUFS_FS:  $(grep 'CONFIG_SUFS_FS' out/.config 2>/dev/null || echo NOT SET)"
+            echo "CHARGING: $(grep 'CONFIG_CHARGING_CONTROL' out/.config 2>/dev/null || echo NOT SET)"
+            echo "ZRAM:     $(grep 'CONFIG_ZRAM' out/.config 2>/dev/null || echo NOT SET)"
+            echo "STACKP:   $(grep 'CONFIG_CC_STACKPROTECTOR' out/.config 2>/dev/null || echo DISABLED)"
       - run:
-          name: "Очистка исходного дерева (is not clean fix)"
-          command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            cd "$KERNEL_SRC"
-            rm -f .config
-            rm -rf include/config
-            echo "Исходное дерево очищено."
-
-      # ── Шаг 10: Сборка ядра ────────────────────────────────────
-      - run:
-          name: "Сборка Infinity Kernel"
+          name: Build kernel — Phase 1: scripts (serial, verbose)
           no_output_timeout: 30m
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            CLANG_DIR="/tmp/infinity-kernel-build/proton-clang"
-            cd "$KERNEL_SRC"
+            cd "$KERNEL_DIR"
+            export PATH="$PROTON_PATH/bin:$PATH"
+            export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
 
-            # proton-clang/bin в начало PATH
-            export PATH="$CLANG_DIR/bin:$PATH"
-            echo "clang:   $(which clang) -> $(clang --version 2>&1 | head -1)"
-            echo "clang-13: $(which clang-13) -> $(clang-13 --version 2>&1 | head -1)"
-            echo "ld:      $(which ld) -> $(ld --version 2>&1 | head -1)"
+            echo "=== Phase 1: Building scripts (serial, V=1) ==="
+            make -j1 V=1 \
+                 ARCH=$ARCH SUBARCH=$SUBARCH \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CC=clang \
+                 CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+                 O=out \
+                 scripts \
+                 2>&1 | tee scripts_build.log
 
-            # Общие флаги для обоих фаз
-            COMMON_MAKE="O=out \
-              ARCH=arm64 \
-              CC=$CLANG_DIR/bin/clang \
-              CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-gnu- \
-              CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-              LD=$CLANG_DIR/bin/ld.lld \
-              AR=$CLANG_DIR/bin/llvm-ar \
-              NM=$CLANG_DIR/bin/llvm-nm \
-              OBJCOPY=$CLANG_DIR/bin/llvm-objcopy \
-              OBJDUMP=$CLANG_DIR/bin/llvm-objdump \
-              STRIP=$CLANG_DIR/bin/llvm-strip \
-              HOSTCC=gcc \
-              HOSTCFLAGS=\"-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error\""
-
-            # ── Фаза 1: scripts (однопоточно) ──
-            echo "=========================================="
-            echo "  ФАЗА 1: Сборка scripts"
-            echo "=========================================="
-            eval make $COMMON_MAKE -j1 scripts 2>&1 | tee /tmp/scripts_build.log
-            if [ ${PIPESTATUS[0]} -ne 0 ]; then
-              echo "ОШИБКА SCRIPTS:"; tail -60 /tmp/scripts_build.log; exit 1
-            fi
-            echo "ФАЗА 1: OK"
-
-            # ── Фаза 2: ядро (параллельно) ──
-            echo "=========================================="
-            echo "  ФАЗА 2: Сборка ядра (-j$(nproc))"
-            echo "=========================================="
-            eval make $COMMON_MAKE \
-              KCFLAGS="-Wno-error" \
-              -j$(nproc) Image.gz-dtb dtbs 2>&1 | tee /tmp/kernel_build.log
-
-            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            if grep -q "error:" scripts_build.log; then
               echo ""
-              echo "=========================================="
-              echo "  ОШИБКА В СБОРКЕ ЯДРА"
-              echo "=========================================="
-              grep -E "error:" /tmp/kernel_build.log | head -30
-              echo "--- Последние 60 строк ---"
-              tail -60 /tmp/kernel_build.log
+              echo "=== SCRIPTS BUILD FAILED ==="
+              grep -n "error:" scripts_build.log | head -20
               exit 1
             fi
-
-      # ── Шаг 11: Проверка и упаковка ───────────────────────────
+            echo "=== Phase 1 complete: scripts OK ==="
       - run:
-          name: "Проверка Image.gz-dtb и упаковка AnyKernel3 ZIP"
+          name: Build kernel — Phase 2: full kernel (parallel)
+          no_output_timeout: 60m
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            IMG="$KERNEL_SRC/out/arch/arm64/boot/Image.gz-dtb"
+            cd "$KERNEL_DIR"
+            export PATH="$PROTON_PATH/bin:$PATH"
+            export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
 
-            if [ ! -f "$IMG" ]; then
-              echo "ОШИБКА: Image.gz-dtb не собрался!"
-              ls -la "$KERNEL_SRC/out/arch/arm64/boot/" 2>/dev/null || echo "boot dir не существует"
+            echo "=== Phase 2: Building kernel (parallel, -j$(nproc)) ==="
+            make -j$(nproc) \
+                 ARCH=$ARCH SUBARCH=$SUBARCH \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CC=clang \
+                 CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+                 O=out \
+                 2>&1 | tee build.log
+
+            echo ""
+            echo "=== Error Summary ==="
+            grep -c "error:" build.log | xargs -I{} echo "{} errors"
+            grep -n "error:" build.log | head -30 || echo "No errors found"
+            echo "=== Warning Summary ==="
+            grep -c "warning:" build.log | xargs -I{} echo "{} warnings"
+
+            if grep -q "error:" build.log; then
+              echo ""
+              echo "=== BUILD FAILED ==="
               exit 1
             fi
 
-            echo "Image.gz-dtb: $(du -sh "$IMG" | cut -f1)"
+            echo "=== BUILD SUCCESS ==="
+            ls -lh out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || \
+            ls -lh out/arch/arm64/boot/Image.gz 2>/dev/null || \
+              { echo "ERROR: No kernel image found!"; exit 1; }
+      - run:
+          name: Package AnyKernel3 ZIP
+          command: |
+            cd "$PROJECT_DIR"
 
-            if [ -d "AnyKernel3" ]; then
-              cp -v "$IMG" AnyKernel3/
-              cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.21.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.21.zip ($(du -sh /tmp/infinity-kernel-v1.0.21.zip | cut -f1))"
-            elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
-              cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
-              cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.21.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.21.zip ($(du -sh /tmp/infinity-kernel-v1.0.21.zip | cut -f1))"
+            # Find kernel image
+            if [ -f "$KERNEL_DIR/out/arch/arm64/boot/Image.gz-dtb" ]; then
+              cp "$KERNEL_DIR/out/arch/arm64/boot/Image.gz-dtb" AnyKernel3/
+              echo "Using Image.gz-dtb"
+            elif [ -f "$KERNEL_DIR/out/arch/arm64/boot/Image.gz" ]; then
+              cp "$KERNEL_DIR/out/arch/arm64/boot/Image.gz" AnyKernel3/
+              echo "Using Image.gz"
             else
-              echo "ОШИБКА: AnyKernel3 директория не найдена"
+              echo "ERROR: No kernel image found"
               exit 1
             fi
 
+            # Copy DTB/DTBO files
+            find "$KERNEL_DIR/out/arch/arm64/boot/dts/qcom/" \
+              -maxdepth 1 \( -name "*.dtb" -o -name "*.dtbo" \) \
+              -exec cp {} AnyKernel3/ \; 2>/dev/null || true
+            [ -f "$KERNEL_DIR/out/arch/arm64/boot/dtbo.img" ] && \
+              cp "$KERNEL_DIR/out/arch/arm64/boot/dtbo.img" AnyKernel3/ 2>/dev/null || true
+            [ -f "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" ] && \
+              cp "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" AnyKernel3/ 2>/dev/null || true
+
+            chmod 755 AnyKernel3/tools/*
+
+            cd AnyKernel3
+            zip -r9 "$PROJECT_DIR/$ZIP_NAME" . \
+              -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
+            cd "$PROJECT_DIR"
+
+            echo ""
+            echo "=== ZIP Package ==="
+            ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.21.zip
-          destination: infinity-kernel-v1.0.21.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.22-vayu.zip
+          destination: InfinityKernel-v1.0.22-vayu.zip
+      - persist_to_workspace:
+          root: /tmp/infinity-kernel-build
+          paths:
+            - InfinityKernel-v1.0.22-vayu.zip
 
 workflows:
-  infinity_build:
+  build-kernel:
     jobs:
-      - build
+      - build:
+          filters:
+            branches:
+              only:
+                - main
+                - master
+                - dev
