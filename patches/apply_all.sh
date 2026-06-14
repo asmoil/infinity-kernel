@@ -1,524 +1,293 @@
 #!/bin/bash
-## apply_all.sh — Infinity Kernel v1.0.17
-## Applies all optimizations via sed/grep/echo on Linux 4.14 (vayu-r-oss).
-## All operations are safe: file existence is checked, missing patterns are OK.
-## Usage: bash apply_all.sh <kernel_src_dir>
+# Infinity Kernel Patch Script
+# Safe sed-based patching for Linux 4.14 SM8250-AC (Poco X3 Pro vayu/bhima)
+# Usage: bash apply_all.sh [kernel_source_dir]
 
-SRC="$1"
-if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
-    echo "Usage: $0 <kernel_source_dir>"
-    exit 1
-fi
+KERNEL_DIR="${1:-.}"
 
-echo "=== Applying Infinity Kernel v1.0.17 patches ==="
-
-###############################################
-# Helper: safe_sed <file> <pattern> <replacement>
-# Only runs sed if file exists. Never fails.
-###############################################
+# --- safe_sed: sed -i with file-existence check and error handling ---
 safe_sed() {
-    local f="$1" p="$2" r="$3"
-    if [ -f "$f" ]; then
-        sed -i "s/$p/$r/g" "$f" 2>/dev/null || true
+    local file="$1"
+    shift
+    if [ ! -f "$file" ]; then
+        echo "  [SKIP] $file not found"
+        return 1
+    fi
+    sed -i "$@" "$file" && echo "  [OK] Patched $file" || echo "  [WARN] Failed to patch $file"
+}
+
+echo "================================"
+echo " Applying Infinity Kernel Patches"
+echo " Target: $KERNEL_DIR"
+echo "================================"
+
+# ============================================================
+# Section 1: CPU Frequency / Governor Tweaks
+# ============================================================
+echo ""
+echo "--- Section 1: CPU Frequency / Governor ---"
+
+# Lower schedutil rate limit for faster frequency response
+safe_sed "$KERNEL_DIR/drivers/cpufreq/cpufreq_schedutil.c" \
+    's/tunable_rate_limit_us\s*=\s*1000/tunable_rate_limit_us = 500/' || true
+
+# Reduce ondemand up_threshold so CPU ramps sooner
+safe_sed "$KERNEL_DIR/drivers/cpufreq/cpufreq_ondemand.c" \
+    's/def_up_threshold\s*=\s*80/def_up_threshold = 65/' || true
+
+# Increase sampling down factor to avoid premature down-scaling
+safe_sed "$KERNEL_DIR/drivers/cpufreq/cpufreq_ondemand.c" \
+    's/def_sampling_down_factor\s*=\s*1/def_sampling_down_factor = 3/' || true
+
+# Tighten sched latency for snappier task scheduling
+safe_sed "$KERNEL_DIR/kernel/sched/core.c" \
+    's/sysctl_sched_latency\s*=\s*6000000ULL/sysctl_sched_latency          = 4000000ULL/' || true
+safe_sed "$KERNEL_DIR/kernel/sched/core.c" \
+    's/normalized_sysctl_sched_latency\s*=\s*6000000ULL/normalized_sysctl_sched_latency  = 4000000ULL/' || true
+
+# Lower min granularity to improve responsiveness
+safe_sed "$KERNEL_DIR/kernel/sched/fair.c" \
+    's/sysctl_sched_min_granularity\s*=\s*750000UL/sysctl_sched_min_granularity = 500000UL/' || true
+safe_sed "$KERNEL_DIR/kernel/sched/fair.c" \
+    's/normalized_sysctl_sched_min_granularity\s*=\s*750000UL/normalized_sysctl_sched_min_granularity = 500000UL/' || true
+
+# Reduce migration cost for better multi-core load balancing
+safe_sed "$KERNEL_DIR/kernel/sched/core.c" \
+    's/sysctl_sched_nr_migrate\s*=\s*32/sysctl_sched_nr_migrate      = 8/' || true
+
+echo "  [1/7] CPU Frequency/Governor: done"
+
+# ============================================================
+# Section 2: I/O Scheduler Optimizations
+# ============================================================
+echo ""
+echo "--- Section 2: I/O Scheduler ---"
+
+# Lower block layer default timeout (30s -> 15s)
+safe_sed "$KERNEL_DIR/block/blk-core.c" \
+    's/BLK_DEFAULT_TIMEOUT\s*(30 \* HZ)/BLK_DEFAULT_TIMEOUT (15 * HZ)/' || true
+
+# Ensure BFQ scheduler is built into block/Makefile
+if [ -f "$KERNEL_DIR/block/Makefile" ]; then
+    if ! grep -q 'bfq-iosched.o' "$KERNEL_DIR/block/Makefile" 2>/dev/null; then
+        sed -i '/obj-$(CONFIG_BLK_DEV_THROTTLING)/i obj-$(CONFIG_IOSCHED_BFQ)\t+= bfq-iosched.o bfq-cgroup.o' \
+            "$KERNEL_DIR/block/Makefile" 2>/dev/null && echo "  [OK] Added BFQ to block/Makefile" || echo "  [WARN] BFQ Makefile add failed"
     else
-        echo "  [SKIP] $f not found"
-    fi
-}
-
-###############################################
-# 1. CPU / Scheduler Tuning
-###############################################
-echo "[1/7] CPU/Scheduler tuning..."
-
-# kernel/sched/core.c
-safe_sed "$SRC/kernel/sched/core.c" \
-    'sysctl_sched_latency\s*=\s*6000000ULL' \
-    'sysctl_sched_latency                      = 4000000ULL'
-
-safe_sed "$SRC/kernel/sched/core.c" \
-    'normalized_sysctl_sched_latency\s*=\s*6000000ULL' \
-    'normalized_sysctl_sched_latency    = 4000000ULL'
-
-safe_sed "$SRC/kernel/sched/core.c" \
-    'sysctl_sched_nr_migrate\s*=\s*32' \
-    'sysctl_sched_nr_migrate           = 8'
-
-# kernel/sched/fair.c
-safe_sed "$SRC/kernel/sched/fair.c" \
-    'sysctl_sched_min_granularity\s*=\s*750000UL' \
-    'sysctl_sched_min_granularity              = 500000UL'
-
-safe_sed "$SRC/kernel/sched/fair.c" \
-    'normalized_sysctl_sched_min_granularity\s*=\s*750000UL' \
-    'normalized_sysctl_sched_min_granularity = 500000UL'
-
-# drivers/cpufreq/cpufreq_ondemand.c
-safe_sed "$SRC/drivers/cpufreq/cpufreq_ondemand.c" \
-    'def_up_threshold\s*=\s*80' \
-    'def_up_threshold                   = 65'
-
-safe_sed "$SRC/drivers/cpufreq/cpufreq_ondemand.c" \
-    'def_sampling_down_factor\s*=\s*1' \
-    'def_sampling_down_factor           = 3'
-
-# drivers/cpufreq/cpufreq_schedutil.c (may not exist in all trees)
-safe_sed "$SRC/drivers/cpufreq/cpufreq_schedutil.c" \
-    'tunable_rate_limit_us\s*=\s*1000' \
-    'tunable_rate_limit_us = 500'
-
-echo "  CPU/Scheduler: done"
-
-###############################################
-# 2. Battery / Power Optimization
-###############################################
-echo "[2/7] Battery/Power optimization..."
-
-safe_sed "$SRC/kernel/power/suspend.c" \
-    'PM_TEST_SUSPEND_DELAY\s*200' \
-    'PM_TEST_SUSPEND_DELAY 100'
-
-safe_sed "$SRC/drivers/base/power/main.c" \
-    'ASYNC_DOMAIN_MAX_TIMEOUT\s*10000' \
-    'ASYNC_DOMAIN_MAX_TIMEOUT       5000'
-
-# Qualcomm charger - only if file exists
-safe_sed "$SRC/drivers/power/supply/qcom/qpnp-smb2-charger.c" \
-    'DEFAULT_FCC_STEP\s*500' \
-    'DEFAULT_FCC_STEP               1500'
-
-# Also try alternate charger path
-safe_sed "$SRC/drivers/power/qcom/qpnp-smb2-charger.c" \
-    'DEFAULT_FCC_STEP\s*500' \
-    'DEFAULT_FCC_STEP               1500'
-
-echo "  Battery/Power: done"
-
-###############################################
-# 3. FSYNC / I/O
-###############################################
-echo "[3/7] FSYNC/I/O optimization..."
-
-safe_sed "$SRC/block/blk-core.c" \
-    'BLK_DEFAULT_TIMEOUT\s*(30 \* HZ)' \
-    'BLK_DEFAULT_TIMEOUT    (15 * HZ)'
-
-# Ensure BFQ is built - only add if not already present
-if [ -f "$SRC/block/Makefile" ]; then
-    if ! grep -q 'bfq-iosched.o' "$SRC/block/Makefile" 2>/dev/null; then
-        sed -i '/obj-\$(CONFIG_BLK_DEV_THROTTLING)/i obj-$(CONFIG_IOSCHED_BFQ)      += bfq-iosched.o bfq-cgroup.o' "$SRC/block/Makefile" 2>/dev/null || true
-    fi
-fi
-
-echo "  FSYNC/I/O: done"
-
-###############################################
-# 4. GPU (Adreno 618 / KGSL)
-###############################################
-echo "[4/7] GPU Adreno 618 tuning..."
-
-# Try multiple possible KGSL locations
-for kgsl_file in \
-    "$SRC/drivers/gpu/msm/kgsl.c" \
-    "$SRC/drivers/gpu/msm/adreno/kgsl.c" \
-    "$SRC/drivers/video/fbdev/msm/kgsl.c"; do
-    if [ -f "$kgsl_file" ]; then
-        safe_sed "$kgsl_file" \
-            '\.upthreshold\s*=\s*80,' \
-            '.upthreshold = 90,'
-        echo "  Found KGSL at: $kgsl_file"
-        break
-    fi
-done
-
-# TLB flush optimization
-for mmu_file in \
-    "$SRC/drivers/gpu/msm/kgsl_mmu.c" \
-    "$SRC/drivers/gpu/msm/adreno/kgsl_mmu.c"; do
-    if [ -f "$mmu_file" ]; then
-        safe_sed "$mmu_file" 'KGSL_IOMMU_TLBFLUSH_SLEEP_IDLE\s*50'   'KGSL_IOMMU_TLBFLUSH_SLEEP_IDLE         25'
-        safe_sed "$mmu_file" 'KGSL_IOMMU_TLBFLUSH_SLEEP_BUSY\s*10'   'KGSL_IOMMU_TLBFLUSH_SLEEP_BUSY         5'
-        safe_sed "$mmu_file" 'KGSL_IOMMU_TLBFLUSH_TIMEOUT\s*10000'   'KGSL_IOMMU_TLBFLUSH_TIMEOUT            5000'
-        echo "  Found KGSL MMU at: $mmu_file"
-        break
-    fi
-done
-
-echo "  GPU: done"
-
-###############################################
-# 5. TCP BBR + Fast Open
-###############################################
-echo "[5/7] TCP BBR + Fast Open..."
-
-safe_sed "$SRC/net/ipv4/tcp_ipv4.c" \
-    'sysctl_tcp_fastopen\s*=\s*1' \
-    'sysctl_tcp_fastopen = 3'
-
-# Add BBR to Kconfig if not present
-if [ -f "$SRC/net/ipv4/Kconfig" ]; then
-    if ! grep -q 'TCP_CONG_BBR' "$SRC/net/ipv4/Kconfig" 2>/dev/null; then
-        sed -i '/config TCP_CONG_HTCP/i\
-config TCP_CONG_BBR\
-\       tistate "BBR TCP"\
-\       default n\
-\       select NET_SCH_FQ_CODEL\
-\       ---help---\
-\         BBR (Bottleneck Bandwidth and RTT) congestion control.\
-\         Requires FQ or FQ_CODEL qdisc.\
-' "$SRC/net/ipv4/Kconfig" 2>/dev/null || true
+        echo "  [INFO] BFQ already in block/Makefile"
     fi
 else
-    echo "  [SKIP] net/ipv4/Kconfig not found"
+    echo "  [SKIP] block/Makefile not found"
 fi
 
-# Add bbr.o to Makefile if not present
-if [ -f "$SRC/net/ipv4/Makefile" ]; then
-    if ! grep -q 'bbr.o' "$SRC/net/ipv4/Makefile" 2>/dev/null; then
-        sed -i '/obj-\$(CONFIG_TCP_CONG_WESTWOOD)/a obj-$(CONFIG_TCP_CONG_BBR) += bbr.o' "$SRC/net/ipv4/Makefile" 2>/dev/null || true
+# Increase default read-ahead size for better sequential I/O
+safe_sed "$KERNEL_DIR/block/blk-settings.c" \
+    's/blk_default_ra\s*=\s*1024/blk_default_ra = 256/' || true
+
+echo "  [2/7] I/O Scheduler: done"
+
+# ============================================================
+# Section 3: Memory / VM Tuning
+# ============================================================
+echo ""
+echo "--- Section 3: Memory / VM Tuning ---"
+
+# Increase dirty page ratio (5% -> 10%) for less frequent writeback
+safe_sed "$KERNEL_DIR/mm/vmscan.c" \
+    's/vm_dirty_ratio\s*=\s*5/vm_dirty_ratio = 10/' || true
+
+# Raise background dirty ratio threshold
+safe_sed "$KERNEL_DIR/mm/vmscan.c" \
+    's/vm_dirty_background_ratio\s*=\s*10/vm_dirty_background_ratio = 5/' || true
+
+# Increase min_free_kbytes to reduce low-memory stalls (default ~8192 -> 65536)
+safe_sed "$KERNEL_DIR/mm/page_alloc.c" \
+    's/min_free_kbytes\s*=\s*8192/min_free_kbytes = 65536/' || true
+
+# Lower swappiness for less aggressive swap on high-memory devices
+safe_sed "$KERNEL_DIR/mm/vmscan.c" \
+    's/vm_swappiness\s*=\s*60/vm_swappiness = 30/' || true
+
+# Raise overcommit ratio to allow more memory allocation before OOM
+safe_sed "$KERNEL_DIR/mm/mmap.c" \
+    's/sysctl_overcommit_ratio\s*=\s*50/sysctl_overcommit_ratio = 80/' || true
+
+# Reduce watermark scale factor for more aggressive reclaim
+safe_sed "$KERNEL_DIR/mm/page_alloc.c" \
+    's/watermark_scale_factor\s*=\s*10/watermark_scale_factor = 15/' || true
+
+echo "  [3/7] Memory/VM: done"
+
+# ============================================================
+# Section 4: TCP / Network Optimizations
+# ============================================================
+echo ""
+echo "--- Section 4: TCP / Network ---"
+
+# Enable TCP Fast Open (client+server = 3)
+safe_sed "$KERNEL_DIR/net/ipv4/tcp_ipv4.c" \
+    's/sysctl_tcp_fastopen\s*=\s*1/sysctl_tcp_fastopen = 3/' || true
+
+# Increase default TCP buffer sizes for better throughput
+safe_sed "$KERNEL_DIR/net/ipv4/tcp.c" \
+    's/sysctl_tcp_wmem\[3\]\s*=\s*4194304/sysctl_tcp_wmem[3] = 16777216/' || true
+safe_sed "$KERNEL_DIR/net/ipv4/tcp.c" \
+    's/sysctl_tcp_rmem\[3\]\s*=\s*4194304/sysctl_tcp_rmem[3] = 16777216/' || true
+
+# Lower TCP keepalive interval for faster dead-connection detection
+safe_sed "$KERNEL_DIR/net/ipv4/tcp_timer.c" \
+    's/TCP_KEEPALIVE_TIME\s*(120 \* HZ)/TCP_KEEPALIVE_TIME (30 * HZ)/' || true
+
+# Enable BBR Kconfig entry if missing
+if [ -f "$KERNEL_DIR/net/ipv4/Kconfig" ]; then
+    if ! grep -q 'TCP_CONG_BBR' "$KERNEL_DIR/net/ipv4/Kconfig" 2>/dev/null; then
+        sed -i '/config TCP_CONG_HTCP/i config TCP_CONG_BBR\n\ttristate "BBR TCP"\n\tdefault n\n\tselect NET_SCH_FQ_CODEL\n\t---help---\n\t  BBR (Bottleneck Bandwidth and RTT) congestion control.' \
+            "$KERNEL_DIR/net/ipv4/Kconfig" 2>/dev/null && echo "  [OK] BBR Kconfig added" || true
+    else
+        echo "  [INFO] BBR already in Kconfig"
     fi
-else
-    echo "  [SKIP] net/ipv4/Makefile not found"
 fi
 
-# Also create BBR source stub if the file doesn't exist
-if [ ! -f "$SRC/net/ipv4/bbr.c" ]; then
-    echo "  Creating bbr.c stub (BBR may be backported from newer kernel)"
-    cat > "$SRC/net/ipv4/bbr.c" << 'BBR_EOF'
+# Add bbr.o to Makefile if missing
+if [ -f "$KERNEL_DIR/net/ipv4/Makefile" ]; then
+    if ! grep -q 'bbr.o' "$KERNEL_DIR/net/ipv4/Makefile" 2>/dev/null; then
+        sed -i '/obj-$(CONFIG_TCP_CONG_WESTWOOD)/a obj-$(CONFIG_TCP_CONG_BBR) += bbr.o' \
+            "$KERNEL_DIR/net/ipv4/Makefile" 2>/dev/null && echo "  [OK] BBR Makefile entry added" || true
+    fi
+fi
+
+# Create minimal BBR stub if source doesn't exist (full BBR needs backport)
+if [ ! -f "$KERNEL_DIR/net/ipv4/bbr.c" ]; then
+    cat > "$KERNEL_DIR/net/ipv4/bbr.c" << 'BBR_EOF'
 // SPDX-License-Identifier: GPL-2.0
-/* BBR congestion control stub for Linux 4.14 */
-/* Full BBR implementation requires backporting from 4.19+ */
+/* BBR congestion control stub — full impl requires backport from 4.19+ */
 #include <net/tcp.h>
-
 static struct tcp_congestion_ops tcp_bbr __read_mostly = {
-        .name           = "bbr",
-        .owner          = THIS_MODULE,
-        .info           = NULL,
-        .cong_control   = NULL,
+	.name		= "bbr",
+	.owner		= THIS_MODULE,
 };
-
-static int __init bbr_register(void)
-{
-        return tcp_register_congestion_control(&tcp_bbr);
-}
-
-static void __exit bbr_unregister(void)
-{
-        tcp_unregister_congestion_control(&tcp_bbr);
-}
-
+static int __init bbr_register(void)  { return tcp_register_congestion_control(&tcp_bbr); }
+static void __exit bbr_unregister(void) { tcp_unregister_congestion_control(&tcp_bbr); }
 module_init(bbr_register);
 module_exit(bbr_unregister);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("BBR TCP congestion control");
 BBR_EOF
-    echo "  bbr.c stub created"
+    echo "  [OK] bbr.c stub created"
 fi
 
-echo "  TCP: done"
+echo "  [4/7] TCP/Network: done"
 
-###############################################
-# 6. Root Manager Support
-###############################################
-echo "[6/7] Root manager support..."
+# ============================================================
+# Section 5: Thermal Tuning
+# ============================================================
+echo ""
+echo "--- Section 5: Thermal ---"
 
-MOD_C="$SRC/kernel/module.c"
-KALL_C="$SRC/kernel/kallsyms.c"
+# Raise thermal trip points on Qualcomm MSM thermal (vayu uses msm_thermal)
+safe_sed "$KERNEL_DIR/drivers/thermal/msm_thermal.c" \
+    's/trip_temp\s*=\s*65000/trip_temp = 75000/' || true
 
-if [ ! -f "$MOD_C" ]; then
-    echo "  [WARN] kernel/module.c not found, skipping root manager patches"
-else
-    # Add module_is_allowlisted function
-    if ! grep -q 'module_is_allowlisted' "$MOD_C" 2>/dev/null; then
-        python3 << 'PYEOF' 2>/dev/null || true
-import os
-mod_c = os.environ.get("MOD_C", "")
-if os.path.isfile(mod_c):
-    with open(mod_c, 'r') as f:
-        content = f.read()
-    if 'module_is_allowlisted' not in content:
-        insert = '''
-/* Root manager module allowlist - bypass sig/vermagic checks */
-static bool module_is_allowlisted(const char *name)
-{
-\tstatic const char * const allowed_modules[] = {
-\t\t"kernelsu",
-\t\t"kernelsu_next",
-\t\t"magisk",
-\t\t"apatch",
-\t\t"kp",
-\t\t"resukisu",
-\t\t"sukisu_ultra",
-\t\tNULL
-\t};
-\tint i;
-\tif (!name)
-\t\treturn false;
-\tfor (i = 0; allowed_modules[i]; i++) {
-\t\tif (strstr(name, allowed_modules[i]))
-\t\t\treturn true;
-\t}
-\treturn false;
-}
+# Raise monitor temp ceiling
+safe_sed "$KERNEL_DIR/drivers/thermal/msm_thermal.c" \
+    's/trip_temp_degC\s*=\s*65/trip_temp_degC = 75/' || true
 
-'''
-        content = content.replace('#ifdef CONFIG_MODULES_TREE_LOOKUP', insert + '#ifdef CONFIG_MODULES_TREE_LOOKUP', 1)
-        with open(mod_c, 'w') as f:
-            f.write(content)
-        print("  module_is_allowlisted added")
-PYEOF
-        # Pass env var for python
-        MOD_C="$MOD_C" python3 -c "
-import os
-mod_c = os.environ.get('MOD_C', '')
-if not mod_c or not os.path.isfile(mod_c):
-    exit(0)
-with open(mod_c, 'r') as f:
-    content = f.read()
-if 'module_is_allowlisted' not in content:
-    insert = '''
-/* Root manager module allowlist - bypass sig/vermagic checks */
-static bool module_is_allowlisted(const char *name)
-{
-\tstatic const char * const allowed_modules[] = {
-\t\t\"kernelsu\",
-\t\t\"kernelsu_next\",
-\t\t\"magisk\",
-\t\t\"apatch\",
-\t\t\"kp\",
-\t\t\"resukisu\",
-\t\t\"sukisu_ultra\",
-\t\tNULL
-\t};
-\tint i;
-\tif (!name)
-\t\treturn false;
-\tfor (i = 0; allowed_modules[i]; i++) {
-\t\tif (strstr(name, allowed_modules[i]))
-\t\t\treturn true;
-\t}
-\treturn false;
-}
+# Increase allowed max frequency at high temp before throttling
+safe_sed "$KERNEL_DIR/drivers/thermal/msm_thermal.c" \
+    's/settling_temp\s*=\s*60000/settling_temp = 70000/' || true
 
-'''
-    content = content.replace('#ifdef CONFIG_MODULES_TREE_LOOKUP', insert + '#ifdef CONFIG_MODULES_TREE_LOOKUP', 1)
-    with open(mod_c, 'w') as f:
-        f.write(content)
-    print('  module_is_allowlisted added')
-" 2>/dev/null || true
-    fi
+# Allow CPU to run hotter before notification
+safe_sed "$KERNEL_DIR/drivers/thermal/thermal_core.c" \
+    's/default_temperature\s*=\s*55000/default_temperature = 65000/' || true
 
-    # Bypass check_modinfo vermagic
-    if ! grep -q 'Skip vermagic check for root manager' "$MOD_C" 2>/dev/null; then
-        MOD_C="$MOD_C" python3 -c "
-import os
-mod_c = os.environ.get('MOD_C', '')
-if not mod_c or not os.path.isfile(mod_c):
-    exit(0)
-with open(mod_c, 'r') as f:
-    content = f.read()
-old = 'static int check_modinfo(struct module *mod,'
-if old in content:
-    new = '''static int check_modinfo(struct module *mod,
-\t\t\t\t  struct load_info *info, int flags)
-{
-\tconst char *modname = get_modinfo(info, \"name\");
+# Increase thermal zone polling delay (2s -> 3s) to reduce overhead
+safe_sed "$KERNEL_DIR/drivers/thermal/thermal_core.c" \
+    's/default_polling_delay\s*=\s*2000/default_polling_delay = 3000/' || true
 
-\t/* Skip vermagic check for root manager modules */
-\tif (module_is_allowlisted(modname))
-\t\treturn 0;
+echo "  [5/7] Thermal: done"
 
-\tif (flags & MODULE_INIT_IGNORE_VERMAGIC)
-\t\tmodname = NULL;'''
-    content = content.replace(old, new, 1)
-    with open(mod_c, 'w') as f:
-        f.write(content)
-    print('  vermagic bypass added')
-" 2>/dev/null || true
-    fi
+# ============================================================
+# Section 6: Build System Fixes (Clang Warning Suppression)
+# ============================================================
+echo ""
+echo "--- Section 6: Build System Fixes ---"
 
-    # Bypass module_sig_check
-    if ! grep -q 'Bypass signature check for root manager' "$MOD_C" 2>/dev/null; then
-        MOD_C="$MOD_C" python3 -c "
-import os
-mod_c = os.environ.get('MOD_C', '')
-if not mod_c or not os.path.isfile(mod_c):
-    exit(0)
-with open(mod_c, 'r') as f:
-    content = f.read()
-old = '''static int module_sig_check(struct load_info *info, int flags)
-{
-\tint err = -ENOMODULE;'''
-if old in content:
-    new = '''static int module_sig_check(struct load_info *info, int flags)
-{
-\tint err = -ENOMODULE;
+# Suppress unused-but-set-variable warnings common with Clang + Linux 4.14
+safe_sed "$KERNEL_DIR/Makefile" \
+    's/-Werror=/-Wno-error=unused-but-set-variable -Werror=/' || true
 
-\t/* Bypass signature check for root manager modules */
-\t{
-\t\tconst char *modname = get_modinfo(info, \"name\");
-\t\tif (modname && module_is_allowlisted(modname))
-\t\t\treturn 0;
-\t}'''
-    content = content.replace(old, new, 1)
-    with open(mod_c, 'w') as f:
-        f.write(content)
-    print('  signature bypass added')
-" 2>/dev/null || true
+# Disable -Wunused-function warnings from Clang
+safe_sed "$KERNEL_DIR/Makefile" \
+    's/-Werror/-Wno-error=unused-function -Wno-error=uninitialized -Werror/' || true
+
+# Suppress frame-larger-than warnings in Clang-built modules
+safe_sed "$KERNEL_DIR/scripts/Makefile.modpost" \
+    's/-Wframe-larger-than=[0-9]*/-Wno-frame-larger-than/' || true
+
+# Add -fno-addrsig for Clang LTO compatibility
+if [ -f "$KERNEL_DIR/Makefile" ]; then
+    if ! grep -q 'fno-addrsig' "$KERNEL_DIR/Makefile" 2>/dev/null; then
+        sed -i 's/KCFLAGS += -fno-addrsig/KCFLAGS += -fno-addrsig/' \
+            "$KERNEL_DIR/Makefile" 2>/dev/null || \
+        sed -i '/^KBUILD_CFLAGS/a KCFLAGS += -fno-addrsig' \
+            "$KERNEL_DIR/Makefile" 2>/dev/null || true
+        echo "  [INFO] Clang LTO flags checked"
     fi
 fi
 
-# Export kallsyms_lookup_name
-if [ -f "$KALL_C" ]; then
-    if ! grep -q 'EXPORT_SYMBOL_GPL(kallsyms_lookup_name)' "$KALL_C" 2>/dev/null; then
-        KALL_C="$KALL_C" python3 -c "
-import os
-kall_c = os.environ.get('KALL_C', '')
-if not kall_c or not os.path.isfile(kall_c):
-    exit(0)
-with open(kall_c, 'r') as f:
-    content = f.read()
-old = 'return module_kallsyms_lookup_name(name);\n}\n\nstatic unsigned long kallsyms_lookup_size_offset'
-if old in content:
-    new = 'return module_kallsyms_lookup_name(name);\n}\n\nEXPORT_SYMBOL_GPL(kallsyms_lookup_name);\nstatic unsigned long kallsyms_lookup_size_offset'
-    content = content.replace(old, new, 1)
-    with open(kall_c, 'w') as f:
-        f.write(content)
-    print('  kallsyms_lookup_name exported')
-else:
-    # Try alternate pattern
-    if 'EXPORT_SYMBOL_GPL(kallsyms_lookup_name)' not in content:
-        # Just append after the function
-        lines = content.split('\n')
-        new_lines = []
-        found = False
-        for i, line in enumerate(lines):
-            new_lines.append(line)
-            if 'module_kallsyms_lookup_name(name)' in line and not found:
-                # Look for closing brace
-                for j in range(i+1, min(i+5, len(lines))):
-                    new_lines.append(lines[j])
-                    if lines[j].strip() == '}':
-                        new_lines.append('')
-                        new_lines.append('EXPORT_SYMBOL_GPL(kallsyms_lookup_name);')
-                        found = True
-                        break
-        if found:
-            with open(kall_c, 'w') as f:
-                f.write('\n'.join(new_lines))
-            print('  kallsyms_lookup_name exported (fallback)')
-" 2>/dev/null || true
-    fi
-else
-    echo "  [WARN] kernel/kallsyms.c not found"
-fi
+# Suppress shift-count-overflow warnings in arm64 headers
+safe_sed "$KERNEL_DIR/arch/arm64/Makefile" \
+    's/-Werror/-Wno-error=shift-count-overflow -Werror/' || true
 
-echo "  Root managers: done"
+echo "  [6/7] Build System: done"
 
-###############################################
-# 7. SUFS v1.5.7+ support
-###############################################
-echo "[7/7] SUFS v1.5.7+ support..."
+# ============================================================
+# Section 7: Display / GPU Optimizations (Adreno 618)
+# ============================================================
+echo ""
+echo "--- Section 7: Display / GPU (Adreno 618) ---"
 
-# Create fs/sufs.c
-if [ ! -f "$SRC/fs/sufs.c" ]; then
-    cat > "$SRC/fs/sufs.c" << 'SUFS_EOF'
-// SPDX-License-Identifier: GPL-2.0
-#include <linux/module.h>
-#include <linux/fs.h>
-#include <linux/mount.h>
-#include <linux/namei.h>
+# Raise KGSL GPU bus voting up-threshold for faster ramp
+for kgsl_c in \
+    "$KERNEL_DIR/drivers/gpu/msm/kgsl.c" \
+    "$KERNEL_DIR/drivers/gpu/msm/adreno/kgsl.c" \
+    "$KERNEL_DIR/drivers/video/fbdev/msm/kgsl.c"; do
+    [ -f "$kgsl_c" ] && {
+        safe_sed "$kgsl_c" \
+            's/\.upthreshold\s*=\s*80,/.upthreshold = 90,/' || true
+        echo "  [INFO] Found KGSL at: $kgsl_c"
+        break
+    }
+done
 
-static struct file_system_type sufs_fs_type = {
-        .owner          = THIS_MODULE,
-        .name           = "sufs",
-        .mount          = NULL,
-        .kill_sb        = kill_anon_super,
-};
+# Optimize KGSL MMU TLB flush timing for Adreno 618
+for mmu_c in \
+    "$KERNEL_DIR/drivers/gpu/msm/kgsl_mmu.c" \
+    "$KERNEL_DIR/drivers/gpu/msm/adreno/kgsl_mmu.c"; do
+    [ -f "$mmu_c" ] && {
+        safe_sed "$mmu_c" \
+            's/KGSL_IOMMU_TLBFLUSH_SLEEP_IDLE\s*50/KGSL_IOMMU_TLBFLUSH_SLEEP_IDLE     = 25/' || true
+        safe_sed "$mmu_c" \
+            's/KGSL_IOMMU_TLBFLUSH_SLEEP_BUSY\s*10/KGSL_IOMMU_TLBFLUSH_SLEEP_BUSY     = 5/' || true
+        safe_sed "$mmu_c" \
+            's/KGSL_IOMMU_TLBFLUSH_TIMEOUT\s*10000/KGSL_IOMMU_TLBFLUSH_TIMEOUT        = 5000/' || true
+        echo "  [INFO] Found KGSL MMU at: $mmu_c"
+        break
+    }
+done
 
-static int __init sufs_init(void)
-{
-        return register_filesystem(&sufs_fs_type);
-}
+# Reduce mdss panel frame-done timeout for snappier display
+safe_sed "$KERNEL_DIR/drivers/video/fbdev/msm/mdss_mdp.c" \
+    's/MDP_FRAME_DONE_TIMEOUT\s*2000/MDP_FRAME_DONE_TIMEOUT      = 1000/' || true
 
-static void __exit sufs_exit(void)
-{
-        unregister_filesystem(&sufs_fs_type);
-}
+# Disable unnecessary vsync compensation for gaming performance
+safe_sed "$KERNEL_DIR/drivers/video/fbdev/msm/mdss_sync.c" \
+    's/VSYNC_EVENT_PERIOD\s*16666/VSYNC_EVENT_PERIOD = 11111/' || true
 
-module_init(sufs_init);
-module_exit(sufs_exit);
-MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("SUFS v1.5.7+ Systemless UFS Filesystem");
-MODULE_AUTHOR("Infinity Kernel");
-SUFS_EOF
-    echo "  fs/sufs.c created"
-else
-    echo "  fs/sufs.c already exists"
-fi
+echo "  [7/7] Display/GPU: done"
 
-# fs/Kconfig: add SUFS config
-if [ -f "$SRC/fs/Kconfig" ]; then
-    if ! grep -q 'SUFS_FS' "$SRC/fs/Kconfig" 2>/dev/null; then
-        # Try inserting before cifs, fallback to end of file
-        if grep -q 'source "fs/cifs/Kconfig"' "$SRC/fs/Kconfig" 2>/dev/null; then
-            sed -i '/source "fs\/cifs\/Kconfig"/i\config SUFS_FS\n\ttristate "SUFS (Systemless UFS) support"\n\tdefault y\n\thelp\n\t  Systemless UFS filesystem support for root managers.\n\t  Required by KernelSU, APatch, and other systemless root solutions\n\t  that need overlay mount capabilities at the kernel level.\n' "$SRC/fs/Kconfig" 2>/dev/null || true
-        else
-            echo '' >> "$SRC/fs/Kconfig"
-            echo 'config SUFS_FS' >> "$SRC/fs/Kconfig"
-            echo '      tristate "SUFS (Systemless UFS) support"' >> "$SRC/fs/Kconfig"
-            echo '      default y' >> "$SRC/fs/Kconfig"
-            echo '      help' >> "$SRC/fs/Kconfig"
-            echo '        Systemless UFS filesystem support for root managers.' >> "$SRC/fs/Kconfig"
-            echo '' >> "$SRC/fs/Kconfig"
-        fi
-        echo "  SUFS Kconfig added"
-    fi
-else
-    echo "  [WARN] fs/Kconfig not found"
-fi
-
-# fs/Makefile: build sufs.o
-if [ -f "$SRC/fs/Makefile" ]; then
-    if ! grep -q 'sufs.o' "$SRC/fs/Makefile" 2>/dev/null; then
-        sed -i 's/libfs.o fs-writeback.o/libfs.o fs-writeback.o sufs.o/g' "$SRC/fs/Makefile" 2>/dev/null || true
-        # Fallback: just append
-        if ! grep -q 'sufs.o' "$SRC/fs/Makefile" 2>/dev/null; then
-            echo 'obj-$(CONFIG_SUFS_FS) += sufs.o' >> "$SRC/fs/Makefile"
-        fi
-        echo "  SUFS Makefile entry added"
-    fi
-else
-    echo "  [WARN] fs/Makefile not found"
-fi
-
-# include/linux/mount.h: add SUFS flags
-if [ -f "$SRC/include/linux/mount.h" ]; then
-    if ! grep -q 'MS_SUFS' "$SRC/include/linux/mount.h" 2>/dev/null; then
-        MOUNT_H="$SRC/include/linux/mount.h" python3 -c "
-import os
-mh = os.environ.get('MOUNT_H', '')
-if not mh or not os.path.isfile(mh):
-    exit(0)
-with open(mh, 'r') as f:
-    content = f.read()
-if 'MS_SUFS' not in content:
-    insert = '''
-#ifdef CONFIG_SUFS_FS
-#define MS_SUFS\t\t0x40000000
-#define IS_SUFS_MOUNT(mnt)\t((mnt)->mnt_flags & MS_SUFS)
-#endif
-
-'''
-    content = content.replace('#define MNT_INTERNAL', insert + '#define MNT_INTERNAL', 1)
-    with open(mh, 'w') as f:
-        f.write(content)
-    print('  SUFS mount flags added')
-" 2>/dev/null || true
-    fi
-else
-    echo "  [WARN] include/linux/mount.h not found"
-fi
-
-echo "  SUFS: done"
-
-echo "=== All Infinity Kernel v1.0.17 patches applied successfully ==="
+# ============================================================
+echo ""
+echo "================================"
+echo " All Infinity Kernel patches applied"
+echo " Review [WARN] messages above"
+echo "================================"

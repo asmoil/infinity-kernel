@@ -1,9 +1,15 @@
-#!/bin/sh
-# AnyKernel3 Update Binary
-# Standard AK3 entry point — delegates to anykernel.sh via ak3-core.sh
+#!/sbin/sh
 
 OUTFD=$2
 ZIPFILE=$3
 
-# Source the main flash script (which sources ak3-core.sh at the end)
-. "$MOUNT_POINT/anykernel.sh"
+mount -t tmpfs tmpfs /dev/tmp
+cd /dev/tmp
+unzip -o "$ZIPFILE"
+
+chmod 755 anykernel.sh
+
+# Run main script
+./anykernel.sh "$@"
+
+exit $?
