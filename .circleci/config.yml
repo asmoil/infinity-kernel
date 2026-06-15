@@ -14,7 +14,7 @@ jobs:
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
       GIT_TERMINAL_PROMPT: 0
-      ZIP_NAME: InfinityKernel-v1.0.25-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.26-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -217,16 +217,32 @@ jobs:
               fi
             done
             echo "=== Re-enabling essential configs (removed by Kconfig deps) ==="
-            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL; do
+            echo "=== Patching .config + auto.conf + autoconf.h (prevent silentoldconfig override) ==="
+            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL \
+                       CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS; do
+              # 1) .config (source of truth for Kconfig)
               sed -i "s/# ${cfg} is not set/${cfg}=y/" out/.config 2>/dev/null || true
-              if ! grep -q "^${cfg}=y" out/.config 2>/dev/null; then
-                echo "${cfg}=y" >> out/.config
+              grep -q "^${cfg}=y" out/.config 2>/dev/null || echo "${cfg}=y" >> out/.config
+              # 2) auto.conf (used by Makefiles for obj-$(CONFIG_X))
+              if [ -f out/include/config/auto.conf ]; then
+                sed -i "s/# ${cfg} is not set/${cfg}=y/" out/include/config/auto.conf 2>/dev/null || true
+                grep -q "^${cfg}=y" out/include/config/auto.conf 2>/dev/null || echo "${cfg}=y" >> out/include/config/auto.conf
+              fi
+              # 3) autoconf.h (used by C preprocessor for #ifdef CONFIG_X)
+              if [ -f out/include/generated/autoconf.h ]; then
+                sed -i "s/#undef ${cfg}/#define ${cfg} 1/" out/include/generated/autoconf.h 2>/dev/null || true
+                grep -q "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null || echo "#define ${cfg} 1" >> out/include/generated/autoconf.h
               fi
             done
+            # NR_CPUS=8 (numeric config, needs all 3 files)
             sed -i 's/CONFIG_NR_CPUS=.*/CONFIG_NR_CPUS=8/' out/.config
-            if ! grep -q '^CONFIG_NR_CPUS=8' out/.config 2>/dev/null; then
-              echo "CONFIG_NR_CPUS=8" >> out/.config
+            grep -q '^CONFIG_NR_CPUS=8' out/.config || echo "CONFIG_NR_CPUS=8" >> out/.config
+            if [ -f out/include/generated/autoconf.h ]; then
+              sed -i 's/#define CONFIG_NR_CPUS .*/#define CONFIG_NR_CPUS 8/' out/include/generated/autoconf.h 2>/dev/null || true
+              grep -q '#define CONFIG_NR_CPUS 8' out/include/generated/autoconf.h || echo '#define CONFIG_NR_CPUS 8' >> out/include/generated/autoconf.h
             fi
+            # Touch auto.conf newer than .config to prevent silentoldconfig
+            touch out/include/config/auto.conf
             echo "=== Verifying disabled configs ==="
             for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST CONFIG_CC_STACKPROTECTOR CONFIG_MFD_SPK_ID; do
               VAL=$(grep "^${cfg}=" out/.config 2>/dev/null || true)
@@ -237,7 +253,7 @@ jobs:
               fi
             done
             echo "=== Verifying re-enabled essential configs ==="
-            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL; do
+            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS; do
               VAL=$(grep "^${cfg}=y" out/.config 2>/dev/null || true)
               if [ -n "$VAL" ]; then
                 echo "OK:   $cfg enabled"
@@ -343,12 +359,12 @@ jobs:
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.25-vayu.zip
-          destination: InfinityKernel-v1.0.25-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.26-vayu.zip
+          destination: InfinityKernel-v1.0.26-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.25-vayu.zip
+            - InfinityKernel-v1.0.26-vayu.zip
 
 workflows:
   build-kernel:

@@ -3,7 +3,7 @@
 ## ROM-agnostic: works on MIUI, HyperOS, and any AOSP-based custom ROM
 ## Runs at early-boot via init.d or post-fs-data
 
-INFINITY_VERSION="1.0.25"
+INFINITY_VERSION="1.0.26"
 INFINITY_DIR="/data/adb/infinity"
 
 ###############################################
