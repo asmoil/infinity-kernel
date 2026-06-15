@@ -14,7 +14,7 @@ jobs:
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
       GIT_TERMINAL_PROMPT: 0
-      ZIP_NAME: InfinityKernel-v1.0.22-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.23-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -140,27 +140,16 @@ jobs:
               echo "Using vayu_defconfig as base"
             fi
             echo "Merging infinity_defconfig on top of $BASE_DEFCONFIG..."
-            scripts/kconfig/merge_config.sh \
+            scripts/kconfig/merge_config.sh -O out/ \
               arch/arm64/configs/${BASE_DEFCONFIG} \
               arch/arm64/configs/infinity_defconfig \
-              -O out/ \
               </dev/null || true
+            echo "=== Disabling Clang-incompatible configs ==="
             for cfg in \
               CONFIG_CC_STACKPROTECTOR CONFIG_CC_STACKPROTECTOR_STRONG \
               CONFIG_CC_STACKPROTECTOR_NONE CONFIG_CC_STACKPROTECTOR_REGULAR \
-              CONFIG_STACKPROTECTOR; do
-              ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
-            done
-            make ARCH=$ARCH SUBARCH=$SUBARCH \
-                 CROSS_COMPILE=aarch64-linux-gnu- \
-                 CC=clang \
-                 CLANG_TRIPLE=aarch64-linux-gnu- \
-                 HOSTCC=gcc \
-                 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
-                 O=out \
-                 olddefconfig \
-                 </dev/null || true
-            DISABLE_CFGS="CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
+              CONFIG_STACKPROTECTOR \
+              CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
               CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
               CONFIG_MEDIA_SUBSYSTEM_AUTOSELECT \
               CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
@@ -172,8 +161,7 @@ jobs:
               CONFIG_STAGING CONFIG_VT \
               CONFIG_FB \
               CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
-              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD"
-            for cfg in $DISABLE_CFGS; do
+              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD; do
               ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
             done
             make ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -185,12 +173,57 @@ jobs:
                  O=out \
                  olddefconfig \
                  </dev/null || true
-            for cfg in $DISABLE_CFGS; do
+            echo "=== Second pass disable (after Kconfig deps resolved) ==="
+            for cfg in \
+              CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
+              CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
+              CONFIG_MEDIA_SUBSYSTEM_AUTOSELECT \
+              CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
+              CONFIG_V4L_MEM2MEM_DRIVERS CONFIG_RADIO_ADAPTERS \
+              CONFIG_SOUND CONFIG_SND CONFIG_SND_SOC \
+              CONFIG_DRM_LEGACY CONFIG_AGP \
+              CONFIG_INFINIBAND CONFIG_FAULT_INJECTION \
+              CONFIG_SAMPLES CONFIG_COMEDI \
+              CONFIG_STAGING CONFIG_VT \
+              CONFIG_FB \
+              CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
+              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD; do
               ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
             done
+            make ARCH=$ARCH SUBARCH=$SUBARCH \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CC=clang \
+                 CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+                 O=out \
+                 olddefconfig \
+                 </dev/null || true
+            echo "=== Final pass: force-kill with sed ==="
+            for cfg in \
+              CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
+              CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
+              CONFIG_MEDIA_SUBSYSTEM_AUTOSELECT \
+              CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
+              CONFIG_V4L_MEM2MEM_DRIVERS CONFIG_RADIO_ADAPTERS \
+              CONFIG_SOUND CONFIG_SND CONFIG_SND_SOC \
+              CONFIG_DRM_LEGACY CONFIG_AGP \
+              CONFIG_INFINIBAND CONFIG_FAULT_INJECTION \
+              CONFIG_SAMPLES CONFIG_COMEDI \
+              CONFIG_STAGING CONFIG_VT \
+              CONFIG_FB \
+              CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
+              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD \
+              CONFIG_CC_STACKPROTECTOR CONFIG_CC_STACKPROTECTOR_STRONG \
+              CONFIG_STACKPROTECTOR; do
+              sed -i "/^${cfg}=/d" out/.config 2>/dev/null || true
+              if ! grep -q "${cfg}" out/.config 2>/dev/null; then
+                echo "# ${cfg} is not set" >> out/.config
+              fi
+            done
             echo "=== Verifying disabled configs ==="
-            for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST; do
-              VAL=$(grep "^${cfg}=" out/.config 2>/dev/null | head -1)
+            for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST CONFIG_CC_STACKPROTECTOR; do
+              VAL=$(grep "^${cfg}=" out/.config 2>/dev/null || true)
               if [ -n "$VAL" ]; then
                 echo "WARN: $VAL is still enabled!"
               else
@@ -289,12 +322,12 @@ jobs:
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.22-vayu.zip
-          destination: InfinityKernel-v1.0.22-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.23-vayu.zip
+          destination: InfinityKernel-v1.0.23-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.22-vayu.zip
+            - InfinityKernel-v1.0.23-vayu.zip
 
 workflows:
   build-kernel:
