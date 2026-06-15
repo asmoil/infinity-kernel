@@ -148,19 +148,7 @@ jobs:
             for cfg in \
               CONFIG_CC_STACKPROTECTOR CONFIG_CC_STACKPROTECTOR_STRONG \
               CONFIG_CC_STACKPROTECTOR_NONE CONFIG_CC_STACKPROTECTOR_REGULAR \
-              CONFIG_STACKPROTECTOR \
-              CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
-              CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
-              CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
-              CONFIG_V4L_MEM2MEM_DRIVERS CONFIG_RADIO_ADAPTERS \
-              CONFIG_SOUND CONFIG_SND CONFIG_SND_SOC \
-              CONFIG_DRM_LEGACY CONFIG_AGP \
-              CONFIG_INFINIBAND CONFIG_FAULT_INJECTION \
-              CONFIG_SAMPLES CONFIG_COMEDI \
-              CONFIG_STAGING CONFIG_VT \
-              CONFIG_FB \
-              CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
-              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD; do
+              CONFIG_STACKPROTECTOR; do
               ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
             done
             make ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -172,6 +160,43 @@ jobs:
                  O=out \
                  olddefconfig \
                  </dev/null || true
+            DISABLE_CFGS="CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
+              CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
+              CONFIG_MEDIA_SUBSYSTEM_AUTOSELECT \
+              CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
+              CONFIG_V4L_MEM2MEM_DRIVERS CONFIG_RADIO_ADAPTERS \
+              CONFIG_SOUND CONFIG_SND CONFIG_SND_SOC \
+              CONFIG_DRM_LEGACY CONFIG_AGP \
+              CONFIG_INFINIBAND CONFIG_FAULT_INJECTION \
+              CONFIG_SAMPLES CONFIG_COMEDI \
+              CONFIG_STAGING CONFIG_VT \
+              CONFIG_FB \
+              CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
+              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD"
+            for cfg in $DISABLE_CFGS; do
+              ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
+            done
+            make ARCH=$ARCH SUBARCH=$SUBARCH \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CC=clang \
+                 CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+                 O=out \
+                 olddefconfig \
+                 </dev/null || true
+            for cfg in $DISABLE_CFGS; do
+              ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
+            done
+            echo "=== Verifying disabled configs ==="
+            for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST; do
+              VAL=$(grep "^${cfg}=" out/.config 2>/dev/null | head -1)
+              if [ -n "$VAL" ]; then
+                echo "WARN: $VAL is still enabled!"
+              else
+                echo "OK:   $cfg disabled"
+              fi
+            done
             echo "=== Config done ==="
             echo "SUFS_FS:  $(grep 'CONFIG_SUFS_FS' out/.config 2>/dev/null || echo NOT SET)"
             echo "CHARGING: $(grep 'CONFIG_CHARGING_CONTROL' out/.config 2>/dev/null || echo NOT SET)"
