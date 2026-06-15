@@ -14,7 +14,7 @@ jobs:
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
       GIT_TERMINAL_PROMPT: 0
-      ZIP_NAME: InfinityKernel-v1.0.29-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.30-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -271,57 +271,80 @@ jobs:
               exit 1
             fi
             echo "=== Phase 1 complete: scripts OK ==="
-            echo "=== Patching hidden Kconfig symbols in auto.conf + autoconf.h ==="
-            echo "(These are 'bool' without prompt - olddefconfig ignores .config values)"
-            HIDDEN_CFGS="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT"
-            for cfg in $HIDDEN_CFGS; do
-              # auto.conf: Makefile conditional compilation (obj-$(CONFIG_X))
-              if [ -f out/include/config/auto.conf ]; then
-                sed -i "s/# ${cfg} is not set/${cfg}=y/" out/include/config/auto.conf 2>/dev/null || true
-                if ! grep -q "^${cfg}=y" out/include/config/auto.conf 2>/dev/null; then
-                  echo "${cfg}=y" >> out/include/config/auto.conf
-                fi
-              else
-                echo "WARN: auto.conf not found, creating..."
-                mkdir -p out/include/config
-                echo "${cfg}=y" >> out/include/config/auto.conf
-              fi
-              # autoconf.h: C preprocessor (#ifdef CONFIG_X)
-              if [ -f out/include/generated/autoconf.h ]; then
-                sed -i "s/#undef ${cfg}/#define ${cfg} 1/" out/include/generated/autoconf.h 2>/dev/null || true
-                if ! grep -q "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null; then
-                  echo "#define ${cfg} 1" >> out/include/generated/autoconf.h
-                fi
-              else
-                echo "WARN: autoconf.h not found, creating..."
-                mkdir -p out/include/generated
-                echo "#define ${cfg} 1" >> out/include/generated/autoconf.h
-              fi
-            done
-            # NR_CPUS=8 in autoconf.h
-            if [ -f out/include/generated/autoconf.h ]; then
-              sed -i 's/#define CONFIG_NR_CPUS .*/#define CONFIG_NR_CPUS 8/' out/include/generated/autoconf.h 2>/dev/null || true
-              grep -q '#define CONFIG_NR_CPUS 8' out/include/generated/autoconf.h || echo '#define CONFIG_NR_CPUS 8' >> out/include/generated/autoconf.h
-            fi
-            echo "=== Verifying hidden config patches ==="
-            for cfg in $HIDDEN_CFGS; do
-              AC=$(grep "^${cfg}=y" out/include/config/auto.conf 2>/dev/null || true)
-              AH=$(grep "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null || true)
-              if [ -n "$AC" ] && [ -n "$AH" ]; then
-                echo "OK:   $cfg patched in auto.conf + autoconf.h"
-              else
-                echo "FAIL: $cfg missing! AC=[$AC] AH=[$AH]"
-              fi
-            done
-            echo "NR_CPUS autoconf.h: $(grep '#define CONFIG_NR_CPUS' out/include/generated/autoconf.h 2>/dev/null || echo MISSING)"
       - run:
-          name: Build kernel phase 2 - full parallel
+          name: Build kernel phase 2 - patch hidden configs then parallel build
           no_output_timeout: 60m
           command: |
             cd "$KERNEL_DIR"
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
-            echo "=== Phase 2: Building kernel (parallel, -j$(nproc)) ==="
+
+            # === Step A: Force-regenerate auto.conf from .config ===
+            # This handles the case where Phase 2 make would re-run
+            # silentoldconfig anyway (overwriting any Phase 1 patches).
+            # By doing it explicitly here, we control the timing.
+            echo "=== Phase 2a: Regenerating auto.conf via olddefconfig ==="
+            make -j1 \
+                 ARCH=$ARCH SUBARCH=$SUBARCH \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CC=clang \
+                 CLANG_TRIPLE=aarch64-linux-gnu- \
+                 HOSTCC=gcc \
+                 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+                 O=out \
+                 olddefconfig \
+                 </dev/null || true
+            echo "auto.conf exists: $(ls -la out/include/config/auto.conf 2>/dev/null || echo MISSING)"
+            echo "autoconf.h exists: $(ls -la out/include/generated/autoconf.h 2>/dev/null || echo MISSING)"
+
+            # === Step B: Patch hidden Kconfig symbols in auto.conf + autoconf.h ===
+            # These are 'bool' without prompt - olddefconfig ignores .config values.
+            # auto.conf controls Makefile obj-$(CONFIG_X) compilation.
+            # autoconf.h controls C preprocessor #ifdef CONFIG_X.
+            # Without this patch, .o files like tick-sched.o, walt.o won't be
+            # compiled, causing linker 'undefined reference' errors.
+            echo "=== Phase 2b: Patching hidden configs in auto.conf + autoconf.h ==="
+            HIDDEN_CFGS="\
+              CONFIG_SCHED_INFO \
+              CONFIG_PINCTRL \
+              CONFIG_NO_HZ_COMMON \
+              CONFIG_POSIX_TIMERS \
+              CONFIG_RTC_CLASS \
+              CONFIG_SCHED_WALT \
+              CONFIG_DEBUG_REGULATOR \
+              CONFIG_VIRT_CPU_ACCOUNTING_GEN"
+            for cfg in $HIDDEN_CFGS; do
+              # auto.conf: Makefile conditional compilation (obj-$(CONFIG_X))
+              sed -i "s/# ${cfg} is not set/${cfg}=y/" out/include/config/auto.conf 2>/dev/null || true
+              if ! grep -q "^${cfg}=y" out/include/config/auto.conf 2>/dev/null; then
+                echo "${cfg}=y" >> out/include/config/auto.conf
+              fi
+              # autoconf.h: C preprocessor (#ifdef CONFIG_X)
+              sed -i "s/#undef ${cfg}/#define ${cfg} 1/" out/include/generated/autoconf.h 2>/dev/null || true
+              if ! grep -q "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null; then
+                echo "#define ${cfg} 1" >> out/include/generated/autoconf.h
+              fi
+            done
+            # NR_CPUS=8 in autoconf.h
+            sed -i 's/#define CONFIG_NR_CPUS .*/#define CONFIG_NR_CPUS 8/' out/include/generated/autoconf.h 2>/dev/null || true
+            grep -q '#define CONFIG_NR_CPUS 8' out/include/generated/autoconf.h || echo '#define CONFIG_NR_CPUS 8' >> out/include/generated/autoconf.h
+
+            echo "=== Verifying hidden config patches ==="
+            for cfg in $HIDDEN_CFGS; do
+              AC=$(grep "^${cfg}=y" out/include/config/auto.conf 2>/dev/null || true)
+              AH=$(grep "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null || true)
+              if [ -n "$AC" ] && [ -n "$AH" ]; then
+                echo "OK:   $cfg"
+              else
+                echo "FAIL: $cfg AC=[$AC] AH=[$AH]"
+              fi
+            done
+            echo "NR_CPUS: $(grep '#define CONFIG_NR_CPUS' out/include/generated/autoconf.h 2>/dev/null || echo MISSING)"
+
+            # === Step C: Full parallel build ===
+            # auto.conf is now newer than .config, so make will NOT
+            # re-run silentoldconfig and overwrite our patches.
+            echo "=== Phase 2c: Building kernel (parallel, -j$(nproc)) ==="
             set -o pipefail
             make -j$(nproc) \
                  ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -382,12 +405,12 @@ jobs:
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.29-vayu.zip
-          destination: InfinityKernel-v1.0.29-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.30-vayu.zip
+          destination: InfinityKernel-v1.0.30-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.29-vayu.zip
+            - InfinityKernel-v1.0.30-vayu.zip
 
 workflows:
   build-kernel:
