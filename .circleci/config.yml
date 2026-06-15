@@ -14,7 +14,7 @@ jobs:
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
       GIT_TERMINAL_PROMPT: 0
-      ZIP_NAME: InfinityKernel-v1.0.26-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.27-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -216,33 +216,14 @@ jobs:
                 echo "# ${cfg} is not set" >> out/.config
               fi
             done
-            echo "=== Re-enabling essential configs (removed by Kconfig deps) ==="
-            echo "=== Patching .config + auto.conf + autoconf.h (prevent silentoldconfig override) ==="
-            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL \
-                       CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS; do
-              # 1) .config (source of truth for Kconfig)
+            echo "=== Re-enabling visible configs in .config (respected by olddefconfig) ==="
+            for cfg in CONFIG_STACKTRACE; do
               sed -i "s/# ${cfg} is not set/${cfg}=y/" out/.config 2>/dev/null || true
               grep -q "^${cfg}=y" out/.config 2>/dev/null || echo "${cfg}=y" >> out/.config
-              # 2) auto.conf (used by Makefiles for obj-$(CONFIG_X))
-              if [ -f out/include/config/auto.conf ]; then
-                sed -i "s/# ${cfg} is not set/${cfg}=y/" out/include/config/auto.conf 2>/dev/null || true
-                grep -q "^${cfg}=y" out/include/config/auto.conf 2>/dev/null || echo "${cfg}=y" >> out/include/config/auto.conf
-              fi
-              # 3) autoconf.h (used by C preprocessor for #ifdef CONFIG_X)
-              if [ -f out/include/generated/autoconf.h ]; then
-                sed -i "s/#undef ${cfg}/#define ${cfg} 1/" out/include/generated/autoconf.h 2>/dev/null || true
-                grep -q "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null || echo "#define ${cfg} 1" >> out/include/generated/autoconf.h
-              fi
             done
-            # NR_CPUS=8 (numeric config, needs all 3 files)
+            # NR_CPUS=8 (visible numeric config)
             sed -i 's/CONFIG_NR_CPUS=.*/CONFIG_NR_CPUS=8/' out/.config
             grep -q '^CONFIG_NR_CPUS=8' out/.config || echo "CONFIG_NR_CPUS=8" >> out/.config
-            if [ -f out/include/generated/autoconf.h ]; then
-              sed -i 's/#define CONFIG_NR_CPUS .*/#define CONFIG_NR_CPUS 8/' out/include/generated/autoconf.h 2>/dev/null || true
-              grep -q '#define CONFIG_NR_CPUS 8' out/include/generated/autoconf.h || echo '#define CONFIG_NR_CPUS 8' >> out/include/generated/autoconf.h
-            fi
-            # Touch auto.conf newer than .config to prevent silentoldconfig
-            touch out/include/config/auto.conf
             echo "=== Verifying disabled configs ==="
             for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST CONFIG_CC_STACKPROTECTOR CONFIG_MFD_SPK_ID; do
               VAL=$(grep "^${cfg}=" out/.config 2>/dev/null || true)
@@ -252,17 +233,8 @@ jobs:
                 echo "OK:   $cfg disabled"
               fi
             done
-            echo "=== Verifying re-enabled essential configs ==="
-            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS; do
-              VAL=$(grep "^${cfg}=y" out/.config 2>/dev/null || true)
-              if [ -n "$VAL" ]; then
-                echo "OK:   $cfg enabled"
-              else
-                echo "WARN: $cfg is NOT enabled!"
-              fi
-            done
             echo "NR_CPUS:   $(grep '^CONFIG_NR_CPUS=' out/.config 2>/dev/null || echo NOT SET)"
-            echo "=== Config done ==="
+            echo "=== Config done (.config only; hidden configs patched after phase 1) ==="
             echo "SUFS_FS:  $(grep 'CONFIG_SUFS_FS' out/.config 2>/dev/null || echo NOT SET)"
             echo "CHARGING: $(grep 'CONFIG_CHARGING_CONTROL' out/.config 2>/dev/null || echo NOT SET)"
             echo "ZRAM:     $(grep 'CONFIG_ZRAM' out/.config 2>/dev/null || echo NOT SET)"
@@ -292,6 +264,49 @@ jobs:
               exit 1
             fi
             echo "=== Phase 1 complete: scripts OK ==="
+            echo "=== Patching hidden Kconfig symbols in auto.conf + autoconf.h ==="
+            echo "(These are 'bool' without prompt - olddefconfig ignores .config values)"
+            HIDDEN_CFGS="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS"
+            for cfg in $HIDDEN_CFGS; do
+              # auto.conf: Makefile conditional compilation (obj-$(CONFIG_X))
+              if [ -f out/include/config/auto.conf ]; then
+                sed -i "s/# ${cfg} is not set/${cfg}=y/" out/include/config/auto.conf 2>/dev/null || true
+                if ! grep -q "^${cfg}=y" out/include/config/auto.conf 2>/dev/null; then
+                  echo "${cfg}=y" >> out/include/config/auto.conf
+                fi
+              else
+                echo "WARN: auto.conf not found, creating..."
+                mkdir -p out/include/config
+                echo "${cfg}=y" >> out/include/config/auto.conf
+              fi
+              # autoconf.h: C preprocessor (#ifdef CONFIG_X)
+              if [ -f out/include/generated/autoconf.h ]; then
+                sed -i "s/#undef ${cfg}/#define ${cfg} 1/" out/include/generated/autoconf.h 2>/dev/null || true
+                if ! grep -q "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null; then
+                  echo "#define ${cfg} 1" >> out/include/generated/autoconf.h
+                fi
+              else
+                echo "WARN: autoconf.h not found, creating..."
+                mkdir -p out/include/generated
+                echo "#define ${cfg} 1" >> out/include/generated/autoconf.h
+              fi
+            done
+            # NR_CPUS=8 in autoconf.h
+            if [ -f out/include/generated/autoconf.h ]; then
+              sed -i 's/#define CONFIG_NR_CPUS .*/#define CONFIG_NR_CPUS 8/' out/include/generated/autoconf.h 2>/dev/null || true
+              grep -q '#define CONFIG_NR_CPUS 8' out/include/generated/autoconf.h || echo '#define CONFIG_NR_CPUS 8' >> out/include/generated/autoconf.h
+            fi
+            echo "=== Verifying hidden config patches ==="
+            for cfg in $HIDDEN_CFGS; do
+              AC=$(grep "^${cfg}=y" out/include/config/auto.conf 2>/dev/null || true)
+              AH=$(grep "#define ${cfg} 1" out/include/generated/autoconf.h 2>/dev/null || true)
+              if [ -n "$AC" ] && [ -n "$AH" ]; then
+                echo "OK:   $cfg patched in auto.conf + autoconf.h"
+              else
+                echo "FAIL: $cfg missing! AC=[$AC] AH=[$AH]"
+              fi
+            done
+            echo "NR_CPUS autoconf.h: $(grep '#define CONFIG_NR_CPUS' out/include/generated/autoconf.h 2>/dev/null || echo MISSING)"
       - run:
           name: Build kernel phase 2 - full parallel
           no_output_timeout: 60m
@@ -359,12 +374,12 @@ jobs:
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.26-vayu.zip
-          destination: InfinityKernel-v1.0.26-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.27-vayu.zip
+          destination: InfinityKernel-v1.0.27-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.26-vayu.zip
+            - InfinityKernel-v1.0.27-vayu.zip
 
 workflows:
   build-kernel:
