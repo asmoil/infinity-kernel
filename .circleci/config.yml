@@ -14,7 +14,7 @@ jobs:
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
       GIT_TERMINAL_PROMPT: 0
-      ZIP_NAME: InfinityKernel-v1.0.23-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.24-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -268,6 +268,7 @@ jobs:
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
             echo "=== Phase 2: Building kernel (parallel, -j$(nproc)) ==="
+            set -o pipefail
             make -j$(nproc) \
                  ARCH=$ARCH SUBARCH=$SUBARCH \
                  CROSS_COMPILE=aarch64-linux-gnu- \
@@ -277,15 +278,19 @@ jobs:
                  HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
                  O=out \
                  2>&1 | tee build.log
+            BUILD_RESULT=$?
             echo ""
-            echo "=== Error Summary ==="
-            grep -c "error:" build.log | xargs -I{} echo "{} errors"
-            grep -n "error:" build.log | head -30 || echo "No errors found"
-            echo "=== Warning Summary ==="
-            grep -c "warning:" build.log | xargs -I{} echo "{} warnings"
-            if grep -q "error:" build.log; then
+            echo "=== Last 80 lines of build log ==="
+            tail -80 build.log
+            echo ""
+            echo "=== All unique errors ==="
+            grep "error:" build.log | sort -u | head -40 || echo "No errors found"
+            echo ""
+            echo "=== Error count: $(grep -c 'error:' build.log || echo 0) ==="
+            echo "=== Warning count: $(grep -c 'warning:' build.log || echo 0) ==="
+            if [ "$BUILD_RESULT" -ne 0 ]; then
               echo ""
-              echo "=== BUILD FAILED ==="
+              echo "=== BUILD FAILED (exit $BUILD_RESULT) ==="
               exit 1
             fi
             echo "=== BUILD SUCCESS ==="
@@ -322,12 +327,12 @@ jobs:
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.23-vayu.zip
-          destination: InfinityKernel-v1.0.23-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.24-vayu.zip
+          destination: InfinityKernel-v1.0.24-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.23-vayu.zip
+            - InfinityKernel-v1.0.24-vayu.zip
 
 workflows:
   build-kernel:
