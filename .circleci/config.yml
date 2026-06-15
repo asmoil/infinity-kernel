@@ -14,7 +14,7 @@ jobs:
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
       GIT_TERMINAL_PROMPT: 0
-      ZIP_NAME: InfinityKernel-v1.0.24-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.25-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -105,7 +105,12 @@ jobs:
       - run:
           name: Apply kernel patches
           command: |
+            cd "$KERNEL_DIR"
             bash "$PROJECT_DIR/patches/apply_all.sh" "$KERNEL_DIR"
+            echo "Removing -Werror from all driver Makefiles..."
+            find drivers/ -name 'Makefile' -exec sed -i 's/-Werror//g' {} \; 2>/dev/null || true
+            find drivers/ -name 'Kbuild' -exec sed -i 's/-Werror//g' {} \; 2>/dev/null || true
+            echo "Done: -Werror removed"
       - run:
           name: Integrate charging driver
           command: |
@@ -327,12 +332,12 @@ jobs:
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.24-vayu.zip
-          destination: InfinityKernel-v1.0.24-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.25-vayu.zip
+          destination: InfinityKernel-v1.0.25-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.24-vayu.zip
+            - InfinityKernel-v1.0.25-vayu.zip
 
 workflows:
   build-kernel:

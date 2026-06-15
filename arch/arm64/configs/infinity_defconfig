@@ -8,6 +8,7 @@
 #
 # CPU & Timer
 #
+CONFIG_NR_CPUS=8
 CONFIG_HZ_300=y
 # CONFIG_NO_HZ_FULL is not set
 CONFIG_CPU_FREQ=y
@@ -72,6 +73,8 @@ CONFIG_MD=y
 #
 # Tracing (root manager support)
 #
+CONFIG_STACKTRACE=y
+CONFIG_SCHED_INFO=y
 CONFIG_KPROBES=y
 CONFIG_UPROBES=y
 CONFIG_FTRACE=y
@@ -160,6 +163,7 @@ CONFIG_KALLSYMS_ALL=y
 # CONFIG_INFINIBAND is not set
 # CONFIG_FAULT_INJECTION is not set
 # CONFIG_SAMPLES is not set
+# CONFIG_MFD_SPK_ID is not set
 
 #
 # Other Optimizations
