@@ -34,8 +34,6 @@ jobs:
               libelf-dev libssl-dev python3 python3-pip zstd \
               liblz4-tool device-tree-compiler rsync file \
               make binutils
-
-            # Linux 4.14 uses 'python' — symlink to python3
             ln -sf /usr/bin/python3 /usr/bin/python
             python --version
       - run:
@@ -48,26 +46,16 @@ jobs:
               git clone --depth=1 \
                 https://github.com/kdrag0n/proton-clang.git \
                 "$PROTON_PATH"
-
               if [ ! -x "$PROTON_PATH/bin/clang" ]; then
                 echo "ERROR: clang not found after clone"
                 exit 1
               fi
-
-              # CRITICAL: Remove 'as' so host tools use GNU as (/usr/bin/as)
-              # Proton's 'as' is llvm-as which lacks -EL flag needed by 4.14
               rm -f "$PROTON_PATH/bin/as"
-
-              # CRITICAL: Replace 'ld' with ld.lld symlink
-              # VDSO Makefile calls /path/to/ld directly — must be lld for aarch64
               rm -f "$PROTON_PATH/bin/ld"
               ln -sf ld.lld "$PROTON_PATH/bin/ld"
-
-              # CRITICAL: VDSO Makefile hardcodes 'clang-13' — symlink to our clang
               for v in 13 14 15 16 17; do
                 ln -sf clang "$PROTON_PATH/bin/clang-$v"
               done
-
               echo "Proton Clang symlinks configured:"
               ls -la "$PROTON_PATH/bin/"{clang,clang-13,ld,as} 2>/dev/null || true
             fi
@@ -75,7 +63,7 @@ jobs:
             "$PROTON_PATH/bin/clang" --version | head -1
             echo "ld.lld: $($PROTON_PATH/bin/ld.lld --version 2>&1 | head -1)"
       - run:
-          name: Clone Xiaomi kernel source (vayu-r-oss)
+          name: Clone Xiaomi kernel source
           no_output_timeout: 20m
           command: |
             cd "$PROJECT_DIR"
@@ -87,19 +75,14 @@ jobs:
                 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
                 "$KERNEL_DIR" || {
                 echo "FATAL: Failed to clone kernel source"
-                echo "URL: https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git"
-                echo "Branch: vayu-r-oss"
                 exit 1
               }
             fi
             echo "Kernel source ready: $(ls "$KERNEL_DIR/Makefile" >/dev/null && echo OK || echo MISSING)"
       - run:
-          name: Fix OpenSSL 3.0 compatibility (extract-cert, sign-file)
+          name: Fix OpenSSL 3.0 compatibility
           command: |
             cd "$KERNEL_DIR"
-
-            # Linux 4.14 uses deprecated OpenSSL APIs removed in 3.0
-            # Add suppression define before any #include <openssl/...>
             for f in scripts/extract-cert.c scripts/sign-file.c; do
               if [ -f "$f" ] && ! grep -q 'OPENSSL_SUPPRESS_DEPRECATED' "$f"; then
                 sed -i '1i\#define OPENSSL_SUPPRESS_DEPRECATED 1' "$f"
@@ -119,26 +102,18 @@ jobs:
           name: Integrate charging driver
           command: |
             cd "$KERNEL_DIR"
-
             cp -r "$PROJECT_DIR/drivers/charging" drivers/infinity_charging
             cp "$PROJECT_DIR/include/linux/infinity_charging_control.h" include/linux/
             mkdir -p scripts/charging_bypass
             cp "$PROJECT_DIR/scripts/charging_bypass/infinity_charging.dts" scripts/charging_bypass/
-
             echo 'obj-y += infinity_charging/' >> drivers/Makefile
             echo 'source "drivers/infinity_charging/Kconfig"' >> drivers/Kconfig
       - run:
-          name: Configure kernel (defconfig + merge + olddefconfig)
+          name: Configure kernel defconfig
           command: |
             cd "$KERNEL_DIR"
-
-            # CRITICAL: Put proton-clang/bin FIRST in PATH
-            # VDSO Makefile overrides CC to bare 'clang' / 'clang-13' —
-            # PATH must resolve to our proton-clang, not system clang-13
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
-
-            # Verify toolchain resolution
             echo "=== Toolchain verification ==="
             echo "clang:     $(which clang) ($(clang --version 2>&1 | head -1))"
             echo "clang-13:  $(which clang-13)"
@@ -147,12 +122,8 @@ jobs:
             echo "CROSS:     $(which aarch64-linux-gnu-gcc)"
             echo "HOSTCC:    $(which gcc)"
             echo ""
-
-            # Clean any stale config
             rm -f .config
             rm -rf out/
-
-            # Use vayu_defconfig as base (or vayu_user_defconfig if available)
             BASE_DEFCONFIG="vayu_defconfig"
             if [ -f "arch/arm64/configs/vayu_user_defconfig" ]; then
               BASE_DEFCONFIG="vayu_user_defconfig"
@@ -160,25 +131,16 @@ jobs:
             else
               echo "Using vayu_defconfig as base"
             fi
-
-            # Merge infinity_defconfig fragment on top of base
             echo "Merging infinity_defconfig on top of $BASE_DEFCONFIG..."
             scripts/kconfig/merge_config.sh \
               arch/arm64/configs/${BASE_DEFCONFIG} \
               arch/arm64/configs/infinity_defconfig \
               -O out/ \
               </dev/null || true
-
-            # Disable stack protector (Clang 17 + 4.14 = broken)
-            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR 2>/dev/null || true
-            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_STRONG 2>/dev/null || true
-            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_NONE 2>/dev/null || true
-            ./scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_REGULAR 2>/dev/null || true
-            ./scripts/config --file out/.config --disable CONFIG_STACKPROTECTOR 2>/dev/null || true
-
-            # Disable Clang-incompatible subsystems
-            echo "Disabling Clang-incompatible configs..."
             for cfg in \
+              CONFIG_CC_STACKPROTECTOR CONFIG_CC_STACKPROTECTOR_STRONG \
+              CONFIG_CC_STACKPROTECTOR_NONE CONFIG_CC_STACKPROTECTOR_REGULAR \
+              CONFIG_STACKPROTECTOR \
               CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
               CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
               CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
@@ -193,10 +155,6 @@ jobs:
               CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD; do
               ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
             done
-
-            # Run olddefconfig
-            # CRITICAL: </dev/null prevents SIGPIPE 141 exit code on 4.14
-            # || true prevents build abort if olddefconfig hits warnings
             make ARCH=$ARCH SUBARCH=$SUBARCH \
                  CROSS_COMPILE=aarch64-linux-gnu- \
                  CC=clang \
@@ -206,20 +164,18 @@ jobs:
                  O=out \
                  olddefconfig \
                  </dev/null || true
-
             echo "=== Config done ==="
             echo "SUFS_FS:  $(grep 'CONFIG_SUFS_FS' out/.config 2>/dev/null || echo NOT SET)"
             echo "CHARGING: $(grep 'CONFIG_CHARGING_CONTROL' out/.config 2>/dev/null || echo NOT SET)"
             echo "ZRAM:     $(grep 'CONFIG_ZRAM' out/.config 2>/dev/null || echo NOT SET)"
             echo "STACKP:   $(grep 'CONFIG_CC_STACKPROTECTOR' out/.config 2>/dev/null || echo DISABLED)"
       - run:
-          name: Build kernel — Phase 1: scripts (serial, verbose)
+          name: Build kernel phase 1 - scripts serial verbose
           no_output_timeout: 30m
           command: |
             cd "$KERNEL_DIR"
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
-
             echo "=== Phase 1: Building scripts (serial, V=1) ==="
             make -j1 V=1 \
                  ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -231,7 +187,6 @@ jobs:
                  O=out \
                  scripts \
                  2>&1 | tee scripts_build.log
-
             if grep -q "error:" scripts_build.log; then
               echo ""
               echo "=== SCRIPTS BUILD FAILED ==="
@@ -240,13 +195,12 @@ jobs:
             fi
             echo "=== Phase 1 complete: scripts OK ==="
       - run:
-          name: Build kernel — Phase 2: full kernel (parallel)
+          name: Build kernel phase 2 - full parallel
           no_output_timeout: 60m
           command: |
             cd "$KERNEL_DIR"
             export PATH="$PROTON_PATH/bin:$PATH"
             export LD_LIBRARY_PATH="$PROTON_PATH/lib:$LD_LIBRARY_PATH"
-
             echo "=== Phase 2: Building kernel (parallel, -j$(nproc)) ==="
             make -j$(nproc) \
                  ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -257,20 +211,17 @@ jobs:
                  HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
                  O=out \
                  2>&1 | tee build.log
-
             echo ""
             echo "=== Error Summary ==="
             grep -c "error:" build.log | xargs -I{} echo "{} errors"
             grep -n "error:" build.log | head -30 || echo "No errors found"
             echo "=== Warning Summary ==="
             grep -c "warning:" build.log | xargs -I{} echo "{} warnings"
-
             if grep -q "error:" build.log; then
               echo ""
               echo "=== BUILD FAILED ==="
               exit 1
             fi
-
             echo "=== BUILD SUCCESS ==="
             ls -lh out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || \
             ls -lh out/arch/arm64/boot/Image.gz 2>/dev/null || \
@@ -279,8 +230,6 @@ jobs:
           name: Package AnyKernel3 ZIP
           command: |
             cd "$PROJECT_DIR"
-
-            # Find kernel image
             if [ -f "$KERNEL_DIR/out/arch/arm64/boot/Image.gz-dtb" ]; then
               cp "$KERNEL_DIR/out/arch/arm64/boot/Image.gz-dtb" AnyKernel3/
               echo "Using Image.gz-dtb"
@@ -291,8 +240,6 @@ jobs:
               echo "ERROR: No kernel image found"
               exit 1
             fi
-
-            # Copy DTB/DTBO files
             find "$KERNEL_DIR/out/arch/arm64/boot/dts/qcom/" \
               -maxdepth 1 \( -name "*.dtb" -o -name "*.dtbo" \) \
               -exec cp {} AnyKernel3/ \; 2>/dev/null || true
@@ -300,14 +247,11 @@ jobs:
               cp "$KERNEL_DIR/out/arch/arm64/boot/dtbo.img" AnyKernel3/ 2>/dev/null || true
             [ -f "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" ] && \
               cp "$KERNEL_DIR/out/arch/arm64/boot/dtb.img" AnyKernel3/ 2>/dev/null || true
-
             chmod 755 AnyKernel3/tools/*
-
             cd AnyKernel3
             zip -r9 "$PROJECT_DIR/$ZIP_NAME" . \
               -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
             cd "$PROJECT_DIR"
-
             echo ""
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
