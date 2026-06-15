@@ -7,7 +7,7 @@
 # AnyKernel3 Header
 ###############################################
 properties() {
-    kernel_string="Infinity Kernel v1.0.5 | SM8250-AC | Proton Clang 17"
+    kernel_string="Infinity Kernel v1.0.25 | SM8250-AC | Proton Clang 17"
     do.devicecheck=1
     do.systemless=1
     do.modules=0
@@ -213,7 +213,7 @@ install_kernel() {
 post_install() {
     ui_print " "
     ui_print "  ========================================"
-    ui_print "    Infinity Kernel v1.0.5 — Installed!"
+    ui_print "    Infinity Kernel v1.0.25 — Installed!"
     ui_print "    ROM: $ROM_TYPE $ROM_VERSION"
     ui_print "    Root: $ROOT_MANAGER"
     ui_print "    Device: $(getprop ro.product.device)"

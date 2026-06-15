@@ -150,7 +150,7 @@ jobs:
               arch/arm64/configs/infinity_defconfig \
               </dev/null || true
             echo "=== Disabling Clang-incompatible configs ==="
-            for cfg in \
+            DISABLE_CFGS="
               CONFIG_CC_STACKPROTECTOR CONFIG_CC_STACKPROTECTOR_STRONG \
               CONFIG_CC_STACKPROTECTOR_NONE CONFIG_CC_STACKPROTECTOR_REGULAR \
               CONFIG_STACKPROTECTOR \
@@ -166,7 +166,9 @@ jobs:
               CONFIG_STAGING CONFIG_VT \
               CONFIG_FB \
               CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
-              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD; do
+              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD \
+              CONFIG_MFD_SPK_ID"
+            for cfg in $DISABLE_CFGS; do
               ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
             done
             make ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -179,20 +181,7 @@ jobs:
                  olddefconfig \
                  </dev/null || true
             echo "=== Second pass disable (after Kconfig deps resolved) ==="
-            for cfg in \
-              CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
-              CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
-              CONFIG_MEDIA_SUBSYSTEM_AUTOSELECT \
-              CONFIG_VIDEO_DEV CONFIG_V4L_PLATFORM_DRIVERS \
-              CONFIG_V4L_MEM2MEM_DRIVERS CONFIG_RADIO_ADAPTERS \
-              CONFIG_SOUND CONFIG_SND CONFIG_SND_SOC \
-              CONFIG_DRM_LEGACY CONFIG_AGP \
-              CONFIG_INFINIBAND CONFIG_FAULT_INJECTION \
-              CONFIG_SAMPLES CONFIG_COMEDI \
-              CONFIG_STAGING CONFIG_VT \
-              CONFIG_FB \
-              CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
-              CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD; do
+            for cfg in $DISABLE_CFGS; do
               ./scripts/config --file out/.config --disable $cfg 2>/dev/null || true
             done
             make ARCH=$ARCH SUBARCH=$SUBARCH \
@@ -205,7 +194,7 @@ jobs:
                  olddefconfig \
                  </dev/null || true
             echo "=== Final pass: force-kill with sed ==="
-            for cfg in \
+            SED_CFGS="
               CONFIG_RC_CORE CONFIG_LIRC CONFIG_MEDIA_RC_SUPPORT \
               CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_CAMERA_SUPPORT \
               CONFIG_MEDIA_SUBSYSTEM_AUTOSELECT \
@@ -220,14 +209,26 @@ jobs:
               CONFIG_VHOST CONFIG_VHOST_NET CONFIG_VHOST_SCSI \
               CONFIG_VHOST_VSOCK CONFIG_STAGING_BOARD \
               CONFIG_CC_STACKPROTECTOR CONFIG_CC_STACKPROTECTOR_STRONG \
-              CONFIG_STACKPROTECTOR; do
+              CONFIG_STACKPROTECTOR CONFIG_MFD_SPK_ID"
+            for cfg in $SED_CFGS; do
               sed -i "/^${cfg}=/d" out/.config 2>/dev/null || true
               if ! grep -q "${cfg}" out/.config 2>/dev/null; then
                 echo "# ${cfg} is not set" >> out/.config
               fi
             done
+            echo "=== Re-enabling essential configs (removed by Kconfig deps) ==="
+            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL; do
+              sed -i "s/# ${cfg} is not set/${cfg}=y/" out/.config 2>/dev/null || true
+              if ! grep -q "^${cfg}=y" out/.config 2>/dev/null; then
+                echo "${cfg}=y" >> out/.config
+              fi
+            done
+            sed -i 's/CONFIG_NR_CPUS=.*/CONFIG_NR_CPUS=8/' out/.config
+            if ! grep -q '^CONFIG_NR_CPUS=8' out/.config 2>/dev/null; then
+              echo "CONFIG_NR_CPUS=8" >> out/.config
+            fi
             echo "=== Verifying disabled configs ==="
-            for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST CONFIG_CC_STACKPROTECTOR; do
+            for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST CONFIG_CC_STACKPROTECTOR CONFIG_MFD_SPK_ID; do
               VAL=$(grep "^${cfg}=" out/.config 2>/dev/null || true)
               if [ -n "$VAL" ]; then
                 echo "WARN: $VAL is still enabled!"
@@ -235,6 +236,16 @@ jobs:
                 echo "OK:   $cfg disabled"
               fi
             done
+            echo "=== Verifying re-enabled essential configs ==="
+            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_INFO CONFIG_PINCTRL; do
+              VAL=$(grep "^${cfg}=y" out/.config 2>/dev/null || true)
+              if [ -n "$VAL" ]; then
+                echo "OK:   $cfg enabled"
+              else
+                echo "WARN: $cfg is NOT enabled!"
+              fi
+            done
+            echo "NR_CPUS:   $(grep '^CONFIG_NR_CPUS=' out/.config 2>/dev/null || echo NOT SET)"
             echo "=== Config done ==="
             echo "SUFS_FS:  $(grep 'CONFIG_SUFS_FS' out/.config 2>/dev/null || echo NOT SET)"
             echo "CHARGING: $(grep 'CONFIG_CHARGING_CONTROL' out/.config 2>/dev/null || echo NOT SET)"
