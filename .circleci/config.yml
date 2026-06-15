@@ -14,7 +14,7 @@ jobs:
       CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
       GIT_TERMINAL_PROMPT: 0
-      ZIP_NAME: InfinityKernel-v1.0.28-vayu.zip
+      ZIP_NAME: InfinityKernel-v1.0.29-vayu.zip
     resource_class: large
     steps:
       - checkout
@@ -217,19 +217,20 @@ jobs:
               fi
             done
             echo "=== Re-enabling visible configs in .config (respected by olddefconfig) ==="
-            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_WALT CONFIG_SCHED_TUNE; do
+            for cfg in CONFIG_STACKTRACE CONFIG_SCHED_WALT; do
               sed -i "s/# ${cfg} is not set/${cfg}=y/" out/.config 2>/dev/null || true
               grep -q "^${cfg}=y" out/.config 2>/dev/null || echo "${cfg}=y" >> out/.config
             done
             # NR_CPUS=8 (visible numeric config)
             sed -i 's/CONFIG_NR_CPUS=.*/CONFIG_NR_CPUS=8/' out/.config
             grep -q '^CONFIG_NR_CPUS=8' out/.config || echo "CONFIG_NR_CPUS=8" >> out/.config
-            # SCHED_WALT and SCHED_TUNE are critical: vendor scheduler symbols
+            # CONFIG_SCHED_WALT is critical: vendor scheduler symbols
             # (FULL_THROTTLE_BOOST, mark_reserved, trace_sched_load_balance_skip_tasks)
             # are all inside #ifdef CONFIG_SCHED_WALT. Without it, fair.c and rt.c
             # fail to compile with undeclared identifier errors.
+            # NOTE: CONFIG_SCHED_TUNE is NOT force-enabled because tune.c requires
+            # CONFIG_CGROUPS which may not be available. SCHED_WALT alone is sufficient.
             echo "SCHED_WALT: $(grep 'CONFIG_SCHED_WALT' out/.config 2>/dev/null || echo NOT SET)"
-            echo "SCHED_TUNE: $(grep 'CONFIG_SCHED_TUNE' out/.config 2>/dev/null || echo NOT SET)"
             echo "=== Verifying disabled configs ==="
             for cfg in CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_SOUND CONFIG_SND CONFIG_STAGING CONFIG_VT CONFIG_FB CONFIG_VHOST CONFIG_CC_STACKPROTECTOR CONFIG_MFD_SPK_ID; do
               VAL=$(grep "^${cfg}=" out/.config 2>/dev/null || true)
@@ -272,7 +273,7 @@ jobs:
             echo "=== Phase 1 complete: scripts OK ==="
             echo "=== Patching hidden Kconfig symbols in auto.conf + autoconf.h ==="
             echo "(These are 'bool' without prompt - olddefconfig ignores .config values)"
-            HIDDEN_CFGS="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_SCHED_TUNE"
+            HIDDEN_CFGS="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_NO_HZ_COMMON CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT"
             for cfg in $HIDDEN_CFGS; do
               # auto.conf: Makefile conditional compilation (obj-$(CONFIG_X))
               if [ -f out/include/config/auto.conf ]; then
@@ -381,12 +382,12 @@ jobs:
             echo "=== ZIP Package ==="
             ls -lh "$ZIP_NAME"
       - store_artifacts:
-          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.28-vayu.zip
-          destination: InfinityKernel-v1.0.28-vayu.zip
+          path: /tmp/infinity-kernel-build/InfinityKernel-v1.0.29-vayu.zip
+          destination: InfinityKernel-v1.0.29-vayu.zip
       - persist_to_workspace:
           root: /tmp/infinity-kernel-build
           paths:
-            - InfinityKernel-v1.0.28-vayu.zip
+            - InfinityKernel-v1.0.29-vayu.zip
 
 workflows:
   build-kernel:
