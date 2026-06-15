@@ -53,11 +53,14 @@ jobs:
               rm -f "$PROTON_PATH/bin/as"
               rm -f "$PROTON_PATH/bin/ld"
               ln -sf ld.lld "$PROTON_PATH/bin/ld"
+              REAL_CLANG=$(readlink -f "$PROTON_PATH/bin/clang")
+              echo "Real clang binary: $REAL_CLANG"
               for v in 13 14 15 16 17; do
-                ln -sf clang "$PROTON_PATH/bin/clang-$v"
+                rm -f "$PROTON_PATH/bin/clang-$v"
+                ln -sf "$REAL_CLANG" "$PROTON_PATH/bin/clang-$v"
               done
               echo "Proton Clang symlinks configured:"
-              ls -la "$PROTON_PATH/bin/"{clang,clang-13,ld,as} 2>/dev/null || true
+              ls -la "$PROTON_PATH/bin/"{clang,clang-13,ld} 2>/dev/null || true
             fi
             echo "Proton Clang ready:"
             "$PROTON_PATH/bin/clang" --version | head -1
