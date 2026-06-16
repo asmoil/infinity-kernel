@@ -1,12 +1,13 @@
-# Infinity Kernel v1.0.33
+# Infinity Kernel v1.0.34
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # Proton Clang 17 | AnyKernel3 | MIT License
 #
-# v1.0.33 fix:
-#   - Fixed 'local: can only be used in a function' bash error in
-#     third disable pass (sed kill) — replaced local with _skip var.
-#   - Fixed CC_STACKPROTECTOR_NONE 'reassigning to symbol' warning
-#     by deleting existing line before appending.
+# v1.0.34 fix:
+#   - Fixed circular symlink: 'clang' is itself a symlink to 'clang-13'
+#     (real binary). Old code did ln -sf clang clang-13, creating
+#     clang-13 → clang → clang-13 (infinite loop). Now uses
+#     readlink -f to find the real binary and symlinks point to it.
+#   - v1.0.33 fixes preserved (bash local fix, CC_STACKPROTECTOR_NONE).
 #   - v1.0.32 fixes preserved (MiCode repo, PROTECTED_CFGS).
 version: 2.1
 
@@ -52,17 +53,30 @@ jobs:
             fi
             ln -sf ld.lld "$CLANG_DIR/bin/ld"
 
-            # 3. Создаём symlinks clang-13, clang-14, ... → clang
-            #    VDSO Makefile в ядре Xiaomi вызывает clang-13 напрямую
+            # 3. Создаём symlinks для версий clang, которые ядро вызывает напрямую
+            #    (VDSO Makefile вызывает clang-13 и т.д.)
+            #    ВАЖНО: clang сам является symlink → clang-13 (реальный бинарник).
+            #    Если сделать ln -sf clang clang-13, получится КРУГОВОЙ symlink:
+            #      clang → clang-13 → clang → clang-13 → ...
+            #    Поэтому все symlinks должны указывать на РЕАЛЬНЫЙ бинарник,
+            #    а не на symlink 'clang'.
+            REAL_CLANG=$(readlink -f "$CLANG_DIR/bin/clang")
+            echo "Real clang binary: $REAL_CLANG"
             for v in 13 14 15 16 17; do
-              ln -sf clang "$CLANG_DIR/bin/clang-$v"
+              if [ "$CLANG_DIR/bin/clang-$v" = "$REAL_CLANG" ]; then
+                echo "  clang-$v is the real binary, skipping"
+                continue
+              fi
+              ln -sf "$REAL_CLANG" "$CLANG_DIR/bin/clang-$v"
             done
 
             echo "=== Проверка инструментов ==="
-            echo "clang:   $(ls -la "$CLANG_DIR/bin/clang")"
-            echo "clang-13: $(ls -la "$CLANG_DIR/bin/clang-13")"
-            echo "ld:      $(ls -la "$CLANG_DIR/bin/ld")"
-            echo "ld.lld:  $(ls -la "$CLANG_DIR/bin/ld.lld")"
+            echo "clang:     $(ls -la "$CLANG_DIR/bin/clang")"
+            echo "real:      $REAL_CLANG"
+            echo "clang-13:  $(ls -la "$CLANG_DIR/bin/clang-13")"
+            echo "clang-17:  $(ls -la "$CLANG_DIR/bin/clang-17")"
+            echo "ld:        $(ls -la "$CLANG_DIR/bin/ld")"
+            echo "ld.lld:    $(ls -la "$CLANG_DIR/bin/ld.lld")"
             echo "============================="
 
       # ── Шаг 3: Определение SRC_ROOT ────────────────────────────
@@ -467,21 +481,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.33.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.33.zip ($(du -sh /tmp/infinity-kernel-v1.0.33.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.34.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.34.zip ($(du -sh /tmp/infinity-kernel-v1.0.34.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.33.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.33.zip ($(du -sh /tmp/infinity-kernel-v1.0.33.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.34.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.34.zip ($(du -sh /tmp/infinity-kernel-v1.0.34.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.33.zip
-          destination: infinity-kernel-v1.0.33.zip
+          path: /tmp/infinity-kernel-v1.0.34.zip
+          destination: infinity-kernel-v1.0.34.zip
 
 workflows:
   infinity_build:
