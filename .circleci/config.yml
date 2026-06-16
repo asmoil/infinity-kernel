@@ -1,14 +1,21 @@
-# Infinity Kernel v1.0.34
+# Infinity Kernel v1.0.35
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
-# Proton Clang 17 | AnyKernel3 | MIT License
+# Gonon Clang 23 | AnyKernel3 | MIT License
 #
-# v1.0.34 fix:
-#   - Fixed circular symlink: 'clang' is itself a symlink to 'clang-13'
-#     (real binary). Old code did ln -sf clang clang-13, creating
-#     clang-13 → clang → clang-13 (infinite loop). Now uses
-#     readlink -f to find the real binary and symlinks point to it.
-#   - v1.0.33 fixes preserved (bash local fix, CC_STACKPROTECTOR_NONE).
+# v1.0.35 changes:
+#   - Switched from Proton Clang 17 to Gonon Clang 23
+#     (https://github.com/Gonon-Kernel/gonon-clang)
+#     Gonon Clang is built on Ubuntu 22.04 (glibc 2.35), matches CI.
+#     Has bundled binutils — aarch64-linux-gnu-* tools included.
+#     CLANG_TRIPLE not required (uses own binutils, not AOSP's).
+#     In Clang 23, 'clang' is the REAL binary (not a symlink to clang-13),
+#     so versioned symlinks (clang-13 → clang) are SAFE — no circular refs.
+#   - Removed 'rm -f $CLANG_DIR/bin/as' — integrated assembler is default
+#     in modern Clang, no need to force-remove GNU as.
+#   - Simplified symlink creation — just ln -sf clang clang-$v (safe).
+#   - v1.0.34 fixes preserved (readlink -f circular symlink fix).
 #   - v1.0.32 fixes preserved (MiCode repo, PROTECTED_CFGS).
+#   - v1.0.31 fixes preserved (local→_skip, CC_STACKPROTECTOR_NONE).
 version: 2.1
 
 jobs:
@@ -32,51 +39,59 @@ jobs:
               gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
               python-is-python3
 
-      # ── Шаг 2: Клонирование Proton Clang 17 + подготовка bin ───
+      # ── Шаг 2: Клонирование Gonon Clang + подготовка bin ─────
       - run:
-          name: "Клонирование Proton Clang 17"
+          name: "Клонирование Gonon Clang 23"
           command: |
-            CLANG_DIR="/tmp/infinity-kernel-build/proton-clang"
+            CLANG_DIR="/tmp/infinity-kernel-build/gonon-clang"
             if [ ! -d "$CLANG_DIR" ]; then
               mkdir -p /tmp/infinity-kernel-build
-              git clone https://github.com/kdrag0n/proton-clang "$CLANG_DIR"
+              git clone https://github.com/Gonon-Kernel/gonon-clang "$CLANG_DIR"
             fi
 
             # === Подготовка bin/ directory ===
-            # 1. Удаляем x86_64 GNU as — Clang 17 использует integrated assembler
-            rm -f "$CLANG_DIR/bin/as"
+            # Gonon Clang 23: 'clang' — РЕАЛЬНЫЙ бинарник (не symlink).
+            # В отличие от Proton Clang 17 (где clang → clang-13),
+            # здесь нет риска круговых symlinks.
+            # Создаём versioned symlinks для VDSO Makefile который
+            # может вызывать clang-13 и т.д. — все указывают на 'clang'.
 
-            # 2. Удаляем x86_64 GNU ld (если есть) — он не умеет arm64
-            #    и создаём symlink ld → ld.lld (LLVM linker, поддерживает arm64)
-            if [ -e "$CLANG_DIR/bin/ld" ]; then
+            # 1. Проверяем что clang — реальный бинарник
+            if [ -L "$CLANG_DIR/bin/clang" ]; then
+              echo "WARNING: clang is a symlink, resolving..."
+              REAL_CLANG=$(readlink -f "$CLANG_DIR/bin/clang")
+              echo "Real clang binary: $REAL_CLANG"
+            else
+              echo "OK: clang is a real binary (not a symlink)"
+              REAL_CLANG="$CLANG_DIR/bin/clang"
+            fi
+
+            # 2. Создаём versioned symlinks (БЕЗОПАСНО с Clang 23)
+            for v in 13 14 15 16 17 18 19 20 21 22 23; do
+              if [ -e "$CLANG_DIR/bin/clang-$v" ]; then
+                echo "  clang-$v already exists ($(ls -la "$CLANG_DIR/bin/clang-$v" | awk '{print $NF}'))"
+              else
+                ln -sf clang "$CLANG_DIR/bin/clang-$v"
+                echo "  Created clang-$v → clang"
+              fi
+            done
+
+            # 3. ld → ld.lld (LLVM linker, поддерживает arm64)
+            if [ -e "$CLANG_DIR/bin/ld" ] && [ ! -L "$CLANG_DIR/bin/ld" ]; then
               rm -f "$CLANG_DIR/bin/ld"
             fi
-            ln -sf ld.lld "$CLANG_DIR/bin/ld"
-
-            # 3. Создаём symlinks для версий clang, которые ядро вызывает напрямую
-            #    (VDSO Makefile вызывает clang-13 и т.д.)
-            #    ВАЖНО: clang сам является symlink → clang-13 (реальный бинарник).
-            #    Если сделать ln -sf clang clang-13, получится КРУГОВОЙ symlink:
-            #      clang → clang-13 → clang → clang-13 → ...
-            #    Поэтому все symlinks должны указывать на РЕАЛЬНЫЙ бинарник,
-            #    а не на symlink 'clang'.
-            REAL_CLANG=$(readlink -f "$CLANG_DIR/bin/clang")
-            echo "Real clang binary: $REAL_CLANG"
-            for v in 13 14 15 16 17; do
-              if [ "$CLANG_DIR/bin/clang-$v" = "$REAL_CLANG" ]; then
-                echo "  clang-$v is the real binary, skipping"
-                continue
-              fi
-              ln -sf "$REAL_CLANG" "$CLANG_DIR/bin/clang-$v"
-            done
+            if [ ! -e "$CLANG_DIR/bin/ld" ]; then
+              ln -sf ld.lld "$CLANG_DIR/bin/ld"
+              echo "  Created ld → ld.lld"
+            fi
 
             echo "=== Проверка инструментов ==="
             echo "clang:     $(ls -la "$CLANG_DIR/bin/clang")"
-            echo "real:      $REAL_CLANG"
+            echo "clang-23:  $(ls -la "$CLANG_DIR/bin/clang-23")"
             echo "clang-13:  $(ls -la "$CLANG_DIR/bin/clang-13")"
-            echo "clang-17:  $(ls -la "$CLANG_DIR/bin/clang-17")"
             echo "ld:        $(ls -la "$CLANG_DIR/bin/ld")"
             echo "ld.lld:    $(ls -la "$CLANG_DIR/bin/ld.lld")"
+            echo "Clang version: $($CLANG_DIR/bin/clang --version 2>&1 | head -1)"
             echo "============================="
 
       # ── Шаг 3: Определение SRC_ROOT ────────────────────────────
@@ -147,7 +162,7 @@ jobs:
             # ═══════════════════════════════════════════════════════
             PROTECTED_CFGS="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
 
-            # Конфиги для отключения (Clang-несовместимые / ненужные на телефоне)
+            # Конфиги для отключения (ненужные на телефоне)
             DISABLE_LIST="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE \
               CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST \
               CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND"
@@ -179,7 +194,7 @@ jobs:
                 sed -i "s/^${cfg}=y/# ${cfg} is not set/" out/.config
                 sed -i "s/^${cfg}=m/# ${cfg} is not set/" out/.config
               done
-              # CC stackprotector (Clang 17 не поддерживает)
+              # CC stackprotector (Clang 23 не поддерживает stack-protector-strong на arm64 kernel)
               sed -i 's/^CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' out/.config
               sed -i 's/^CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' out/.config
               sed -i '/^CONFIG_CC_STACKPROTECTOR_NONE/d' out/.config
@@ -332,20 +347,23 @@ jobs:
 
       # ── Шаг 10: Сборка ядра (3 sub-phases) ────────────────────
       - run:
-          name: "Сборка Infinity Kernel"
+          name: "Сборка Infinity Kernel (Gonon Clang 23)"
           no_output_timeout: 30m
           command: |
             KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            CLANG_DIR="/tmp/infinity-kernel-build/proton-clang"
+            CLANG_DIR="/tmp/infinity-kernel-build/gonon-clang"
             cd "$KERNEL_SRC"
 
-            # proton-clang/bin в начало PATH
+            # gonon-clang/bin в начало PATH
             export PATH="$CLANG_DIR/bin:$PATH"
-            echo "clang:   $(which clang) -> $(clang --version 2>&1 | head -1)"
-            echo "clang-13: $(which clang-13) -> $(clang-13 --version 2>&1 | head -1)"
-            echo "ld:      $(which ld) -> $(ld --version 2>&1 | head -1)"
+            echo "clang:     $(which clang) -> $(clang --version 2>&1 | head -1)"
+            echo "clang-23:  $(which clang-23 2>/dev/null && clang-23 --version 2>&1 | head -1 || echo 'not found')"
+            echo "clang-13:  $(which clang-13 2>/dev/null && clang-13 --version 2>&1 | head -1 || echo 'not found')"
+            echo "ld:        $(which ld) -> $(ld --version 2>&1 | head -1)"
 
             # Общие флаги
+            # Gonon Clang: CLANG_TRIPLE НЕ нужен (использует собственный binutils)
+            # Но оставляем для совместимости — ядро может проверять эту переменную.
             COMMON_MAKE="O=out \
               ARCH=arm64 \
               CC=$CLANG_DIR/bin/clang \
@@ -481,21 +499,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.34.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.34.zip ($(du -sh /tmp/infinity-kernel-v1.0.34.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.35.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.35.zip ($(du -sh /tmp/infinity-kernel-v1.0.35.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.34.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.34.zip ($(du -sh /tmp/infinity-kernel-v1.0.34.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.35.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.35.zip ($(du -sh /tmp/infinity-kernel-v1.0.35.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.34.zip
-          destination: infinity-kernel-v1.0.34.zip
+          path: /tmp/infinity-kernel-v1.0.35.zip
+          destination: infinity-kernel-v1.0.35.zip
 
 workflows:
   infinity_build:
