@@ -1,11 +1,13 @@
-# Infinity Kernel v1.0.32
+# Infinity Kernel v1.0.33
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # Proton Clang 17 | AnyKernel3 | MIT License
 #
-# v1.0.32 fix:
-#   - Switched kernel source repo from negrroo/ (now private)
-#     to official MiCode/Xiaomi_Kernel_OpenSource.
-#   - v1.0.31 fixes preserved (PROTECTED_CFGS, fixed HIDDEN_CFGS).
+# v1.0.33 fix:
+#   - Fixed 'local: can only be used in a function' bash error in
+#     third disable pass (sed kill) — replaced local with _skip var.
+#   - Fixed CC_STACKPROTECTOR_NONE 'reassigning to symbol' warning
+#     by deleting existing line before appending.
+#   - v1.0.32 fixes preserved (MiCode repo, PROTECTED_CFGS).
 version: 2.1
 
 jobs:
@@ -164,10 +166,10 @@ jobs:
                 sed -i "s/^${cfg}=m/# ${cfg} is not set/" out/.config
               done
               # CC stackprotector (Clang 17 не поддерживает)
-              sed -i 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' out/.config
-              sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' out/.config
-              grep -q "^CONFIG_CC_STACKPROTECTOR_NONE=y" out/.config || \
-                echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
+              sed -i 's/^CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' out/.config
+              sed -i 's/^CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' out/.config
+              sed -i '/^CONFIG_CC_STACKPROTECTOR_NONE/d' out/.config
+              echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
             }
 
             echo "  [1/6] First disable pass..."
@@ -179,12 +181,13 @@ jobs:
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
             echo "  [3/6] Third disable pass (sed kill)..."
+            _skip=0
             for cfg in $DISABLE_LIST; do
-              local skip=0
+              _skip=0
               for p in $PROTECTED_CFGS; do
-                if [ "$cfg" = "$p" ]; then skip=1; break; fi
+                if [ "$cfg" = "$p" ]; then _skip=1; break; fi
               done
-              [ "$skip" = "1" ] && continue
+              [ "$_skip" = "1" ] && continue
               sed -i "/^${cfg}=/d" out/.config
               if ! grep -q "^# ${cfg} is not set" out/.config; then
                 echo "# ${cfg} is not set" >> out/.config
@@ -464,21 +467,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.32.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.32.zip ($(du -sh /tmp/infinity-kernel-v1.0.32.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.33.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.33.zip ($(du -sh /tmp/infinity-kernel-v1.0.33.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.32.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.32.zip ($(du -sh /tmp/infinity-kernel-v1.0.32.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.33.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.33.zip ($(du -sh /tmp/infinity-kernel-v1.0.33.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.32.zip
-          destination: infinity-kernel-v1.0.32.zip
+          path: /tmp/infinity-kernel-v1.0.33.zip
+          destination: infinity-kernel-v1.0.33.zip
 
 workflows:
   infinity_build:
