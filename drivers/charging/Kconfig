@@ -1,6 +1,4 @@
-/*
- * Infinity Charging Control — Kconfig
- */
+# Infinity Charging Control - Kconfig
 
 config CHARGING_CONTROL
     bool "Infinity Charging Control (SM8250-AC)"
