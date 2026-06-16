@@ -1,16 +1,11 @@
-# Infinity Kernel v1.0.31
+# Infinity Kernel v1.0.32
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # Proton Clang 17 | AnyKernel3 | MIT License
 #
-# v1.0.31 fix:
-#   - Removed CONFIG_NO_HZ_COMMON and CONFIG_VIRT_CPU_ACCOUNTING_GEN
-#     from HIDDEN_CFGS. Both control Makefile obj-$(CONFIG_X) compilation
-#     or are Kconfig choice members — sed in auto.conf breaks them.
-#   - Added PROTECTED_CFGS exclusion list to the disable pass so these
-#     configs are never disabled in the first place (they stay enabled
-#     naturally through defconfig → olddefconfig chain).
-#   - HIDDEN_CFGS now only contains configs that are #ifdef-protected
-#     in .c/.h files (not Makefile-conditional or choice members).
+# v1.0.32 fix:
+#   - Switched kernel source repo from negrroo/ (now private)
+#     to official MiCode/Xiaomi_Kernel_OpenSource.
+#   - v1.0.31 fixes preserved (PROTECTED_CFGS, fixed HIDDEN_CFGS).
 version: 2.1
 
 jobs:
@@ -90,7 +85,7 @@ jobs:
             KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
             if [ ! -d "$KERNEL_SRC/.git" ]; then
               git clone --depth=1 --branch vayu-r-oss \
-                https://github.com/negrroo/Xiaomi_Kernel_OpenSource \
+                https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
                 "$KERNEL_SRC"
             fi
             echo "KERNEL_SRC=$KERNEL_SRC"
@@ -469,21 +464,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.31.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.31.zip ($(du -sh /tmp/infinity-kernel-v1.0.31.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.32.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.32.zip ($(du -sh /tmp/infinity-kernel-v1.0.32.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.31.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.31.zip ($(du -sh /tmp/infinity-kernel-v1.0.31.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.32.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.32.zip ($(du -sh /tmp/infinity-kernel-v1.0.32.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.31.zip
-          destination: infinity-kernel-v1.0.31.zip
+          path: /tmp/infinity-kernel-v1.0.32.zip
+          destination: infinity-kernel-v1.0.32.zip
 
 workflows:
   infinity_build:
