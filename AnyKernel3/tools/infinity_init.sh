@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Infinity Kernel Init Script v1.0.37
+# Infinity Kernel Init Script v1.0.38
 # Poco X3 Pro (vayu/bhima) | SM8250-AC
 # BBR, Maple/BFQ, ZRAM 5GB LZ4, KSM, FSYNC, VM tuning
 
