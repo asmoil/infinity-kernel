@@ -1,12 +1,14 @@
-# Infinity Kernel v1.0.36
+# Infinity Kernel v1.0.37
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 #
-# v1.0.36 changes:
+# v1.0.37 changes:
+#   - Fixed: added software-properties-common for add-apt-repository
+#     required by llvm.sh installer script.
 #   - Toolchain: Clang 23 via official LLVM apt repository (apt.llvm.org).
 #     No git clone, no symlinks, no glibc issues. Clang 23 installs to
 #     /usr/lib/llvm-23/bin/ with all LLVM tools (ld.lld, llvm-ar, etc.).
-#   - SuSFS updated to v2.1.0 (from susfs4ksu for Linux 4.14).
+#   - SuSFS v2.1.0 (from susfs4ksu for Linux 4.14).
 #   - KernelSU-Next v3.2.0 (latest, matches Alymore Project).
 #   - v1.0.34 fixes preserved (MiCode repo, PROTECTED_CFGS).
 #   - v1.0.33 fixes preserved (bash local→_skip, CC_STACKPROTECTOR_NONE).
@@ -31,7 +33,8 @@ jobs:
               git gnupg gperf imagemagick \
               libelf-dev liblz4-tool libncurses5-dev \
               libssl-dev libxml2 libxml2-utils lzop \
-              rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+              rsync schedtool squashfs-tools software-properties-common \
+              xsltproc zip zlib1g-dev \
               gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
               python-is-python3 ca-certificates lsb-release wget
 
@@ -476,21 +479,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.36.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.36.zip ($(du -sh /tmp/infinity-kernel-v1.0.36.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.37.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.37.zip ($(du -sh /tmp/infinity-kernel-v1.0.37.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.36.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.36.zip ($(du -sh /tmp/infinity-kernel-v1.0.36.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.37.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.37.zip ($(du -sh /tmp/infinity-kernel-v1.0.37.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.36.zip
-          destination: infinity-kernel-v1.0.36.zip
+          path: /tmp/infinity-kernel-v1.0.37.zip
+          destination: infinity-kernel-v1.0.37.zip
 
 workflows:
   infinity_build:
