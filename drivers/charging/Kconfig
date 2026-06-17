@@ -1,10 +1,8 @@
-# Infinity Charging Control - Kconfig
-
 config CHARGING_CONTROL
-    bool "Infinity Charging Control (SM8250-AC)"
-    depends on POWER_SUPPLY && OF
-    default n
+    tristate "Infinity Charging Control (Gaming Bypass)"
+    default y
+    depends on POWER_SUPPLY && THERMAL
     help
-      Charging control driver for SM8250-AC (Poco X3 Pro).
-      Provides 4 modes via sysfs: bypass, normal, 80% limit, 90% limit.
-      Also accessible via IOCTL through /dev/infinity_charging_control.
+      Infinity Kernel charging bypass control for gaming.
+      Supports 4 modes (LIGHT/BALANCED/EXTREME/ULTRA) with
+      thermal monitoring and auto-resume.

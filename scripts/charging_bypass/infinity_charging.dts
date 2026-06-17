@@ -1,19 +1,23 @@
-/*
- * Infinity Charging Bypass DTS overlay
- * Compatible: qcom,sm8250 / qcom,sm8250-ac
- * Poco X3 Pro (vayu/bhima)
- */
-
 /dts-v1/;
 /plugin/;
 
 / {
     compatible = "qcom,sm8250";
-};
 
-&soc {
-    infinity_charging: infinity_charging@0 {
-        compatible = "qcom,sm8250";
-        status = "okay";
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            infinity_charging: infinity-charging {
+                compatible = "infinity,charging-control";
+                status = "okay";
+                default-thermal-limit = <42>;
+                default-auto-resume = <15>;
+                charging-modes = <0 1 2 3 4>;
+                mode-light-pause = <80>;
+                mode-balanced-pause = <70>;
+                mode-extreme-pause = <60>;
+                mode-ultra-pause = <50>;
+            };
+        };
     };
 };

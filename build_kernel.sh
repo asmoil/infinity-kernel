@@ -1,380 +1,488 @@
-#!/usr/bin/env bash
-# ================================================================
-#  build_kernel.sh  –  LawRun vayu  ·  KernelSU Next + SUSFS
-#  Linux 4.14  ·  SM8150  ·  POCO X3 Pro (vayu / bhima)
+#!/bin/bash
+##########################################################################################
+#  Infinity Kernel Build Script
+#  Device: Poco X3 Pro (vayu/bhima) - Snapdragon 732G
+#  AnyKernel3 flashable ZIP output
 #
-#  Работает в двух режимах:
-#    LOCAL:  запустить из директории ядра
-#            ANYKERNEL_DIR=/path/to/this/repo ./build_kernel.sh
-#    CI:     запустить из директории AnyKernel3 (CircleCI checkout)
-#            KERNEL_DIR будет задан env-переменной или автоклонирован
-# ================================================================
-set -euo pipefail
+#  Usage:
+#    ./build.sh                          # Build with defaults
+#    ./build.sh /path/to/kernel/source   # Build with custom kernel source
+#    ./build.sh -c                       # Clean build
+#    ./build.sh -r <root_manager>        # Inject root manager (ksu/magisk/apatch)
+##########################################################################################
 
-# ── Directories ───────────────────────────────────────────────
-# ANYKERNEL_DIR = каталог с anykernel.sh (этот репозиторий)
+set -e
+
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Project paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANYKERNEL_DIR="${ANYKERNEL_DIR:-$SCRIPT_DIR}"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUT_DIR="${PROJECT_DIR}/out"
+ANYKERNEL_DIR="${PROJECT_DIR}/AnyKernel3"
+DOWNLOAD_DIR="${PROJECT_DIR}/../download"
 
-# KERNEL_DIR = корень исходников ядра (с Makefile)
-# Если не задан явно — используем pwd, иначе клонируем
-KERNEL_DIR="${KERNEL_DIR:-$(pwd)}"
-OUT_DIR="${OUT_DIR:-$KERNEL_DIR/out}"
-
-# Kernel source — переопределить через env если нужен другой форк
-KERNEL_SOURCE_URL="${KERNEL_SOURCE_URL:-https://github.com/negrroo/LawRun_xiaomi_sm8150_vayu}"
-KERNEL_SOURCE_BRANCH="${KERNEL_SOURCE_BRANCH:-master}"
-
-DEFCONFIG="vayu_defconfig"
+# Build configuration
+DEFCONFIG="infinity_defconfig"
 ARCH="arm64"
-JOBS=$(nproc --all)
+CROSS_COMPILE=""
+CLANG_TRIPLE=""
+CCACHE=""
+CLEAN_BUILD=0
+VERBOSE=0
+JOBS=$(nproc)
+ROOT_MANAGER=""
+KERNEL_VERSION="1.0"
 
-# ── Toolchain ─────────────────────────────────────────────────
-if [ -z "${CLANG_PATH:-}" ]; then
-  for p in \
-    /usr/lib/llvm-17/bin \
-    /usr/lib/llvm-16/bin \
-    /usr/lib/llvm-14/bin \
-    /opt/toolchains/clang/bin; do
-    [ -x "$p/clang" ] && { CLANG_PATH="$p"; break; }
-  done
-fi
-CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
-CROSS_COMPILE_COMPAT="${CROSS_COMPILE_COMPAT:-arm-linux-gnueabi-}"
+# Toolchain paths (adjust these to your environment)
+# Proton Clang (recommended)
+PROTON_CLANG_PATH="$HOME/proton-clang"
+# AOSP Clang
+AOSP_CLANG_PATH="$HOME/Android/CLANG"
+# GCC cross-compiler
+GCC_PATH="$HOME/Android/GCC"
 
-# ── Helpers ───────────────────────────────────────────────────
-info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
-ok()    { echo -e "\033[1;32m[ OK ]\033[0m  $*"; }
-warn()  { echo -e "\033[1;33m[WARN]\033[0m  $*"; }
-die()   { echo -e "\033[1;31m[FAIL]\033[0m  $*"; exit 1; }
+# ==============================================================================
+# FUNCTIONS
+# ==============================================================================
 
-# ================================================================
-# Step 0: Клонировать исходники ядра (если не найдены)
-# ================================================================
-clone_kernel_source() {
-  # Если KERNEL_DIR совпадает с ANYKERNEL_DIR — это CI-режим,
-  # ядро надо клонировать в отдельную папку рядом
-  if [ "$KERNEL_DIR" = "$ANYKERNEL_DIR" ]; then
-    KERNEL_DIR="$(dirname "$ANYKERNEL_DIR")/kernel_src"
-    OUT_DIR="$KERNEL_DIR/out"
-    info "CI mode: KERNEL_DIR → $KERNEL_DIR"
-  fi
-
-  if [ -f "$KERNEL_DIR/Makefile" ]; then
-    info "Kernel source: found at $KERNEL_DIR"
-    return
-  fi
-
-  info "Kernel source не найден — клонируем..."
-  info "URL:    $KERNEL_SOURCE_URL"
-  info "Branch: $KERNEL_SOURCE_BRANCH"
-
-  mkdir -p "$(dirname "$KERNEL_DIR")"
-
-  # GIT_TERMINAL_PROMPT=0  → запрет интерактивного логина (критично для CI)
-  # credential.helper=""   → отключить системный credential helper
-  # Без этого git в non-TTY окружении (CircleCI) зависает на вводе пароля
-  info "git clone (no-auth, depth=1, branch=$KERNEL_SOURCE_BRANCH) …"
-  if ! GIT_TERMINAL_PROMPT=0 git clone \
-       --depth=1 \
-       --config "credential.helper=" \
-       --branch "$KERNEL_SOURCE_BRANCH" \
-       "$KERNEL_SOURCE_URL" \
-       "$KERNEL_DIR" 2>&1; then
-
-    warn "Клон ветки '$KERNEL_SOURCE_BRANCH' не удался — пробуем default branch …"
-    rm -rf "$KERNEL_DIR"
-    GIT_TERMINAL_PROMPT=0 git clone \
-      --depth=1 \
-      --config "credential.helper=" \
-      "$KERNEL_SOURCE_URL" \
-      "$KERNEL_DIR" \
-    || die "Не удалось клонировать ядро из $KERNEL_SOURCE_URL
-  Проверьте:
-    1. Репозиторий публичный (github.com > Settings > Visibility: Public)
-    2. Ветка существует: git ls-remote --heads $KERNEL_SOURCE_URL
-  Переопределить через env:
-    export KERNEL_SOURCE_URL=https://github.com/negrroo/LawRun_xiaomi_sm8150_vayu
-    export KERNEL_SOURCE_BRANCH=master"
-  fi
-
-  ok "Kernel source клонирован."
+print_banner() {
+    echo -e "${PURPLE}"
+    echo "  ╔═══════════════════════════════════════════════════════╗"
+    echo "  ║                                                       ║"
+    echo "  ║        ██╗  ██╗███████╗██╗   ██╗███╗   ██╗ ██████╗    ║"
+    echo "  ║        ██║ ██╔╝██╔════╝╚██╗ ██╔╝████╗  ██║██╔═══██╗   ║"
+    echo "  ║        █████╔╝ █████╗   ╚████╔╝ ██╔██╗ ██║██║   ██║   ║"
+    echo "  ║        ██╔═██╗ ██╔══╝    ╚██╔╝  ██║╚██╗██║██║   ██║   ║"
+    echo "  ║        ██║  ██╗███████╗   ██║   ██║ ╚████║╚██████╔╝   ║"
+    echo "  ║        ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝    ║"
+    echo "  ║                   K E R N E L                       ║"
+    echo "  ║                                                       ║"
+    echo "  ║     Poco X3 Pro | Performance + Battery Balance      ║"
+    echo "  ║     AnyKernel3 | Charging Bypass | Root Support       ║"
+    echo "  ║                                                       ║"
+    echo "  ╚═══════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
 }
 
-# ================================================================
-# Step 1: KernelSU Next
-# ================================================================
-setup_ksu() {
-  info "Setting up KernelSU Next …"
+log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-  local ksu_dir="$KERNEL_DIR/KernelSU"
+detect_toolchain() {
+    log_info "Detecting toolchain..."
 
-  if [ -d "$ksu_dir/kernel" ]; then
-    info "KernelSU Next: уже присутствует."
-    return
-  fi
+    # Priority: Proton Clang > AOSP Clang > GCC
+    if [ -d "$PROTON_CLANG_PATH" ]; then
+        export PATH="$PROTON_CLANG_PATH/bin:$PATH"
+        CROSS_COMPILE="aarch64-linux-gnu-"
+        CLANG_TRIPLE="aarch64-linux-gnu-"
+        CC="clang"
+        LD="ld.lld"
+        AR="llvm-ar"
+        NM="llvm-nm"
+        OBJCOPY="llvm-objcopy"
+        OBJDUMP="llvm-objdump"
+        STRIP="llvm-strip"
+        log_ok "Using Proton Clang: $PROTON_CLANG_PATH"
+    elif [ -d "$AOSP_CLANG_PATH" ]; then
+        export PATH="$AOSP_CLANG_PATH/bin:$PATH"
+        CROSS_COMPILE="aarch64-linux-gnu-"
+        CLANG_TRIPLE="aarch64-linux-gnu-"
+        CC="clang"
+        LD="ld.lld"
+        AR="llvm-ar"
+        NM="llvm-nm"
+        OBJCOPY="llvm-objcopy"
+        OBJDUMP="llvm-objdump"
+        STRIP="llvm-strip"
+        log_ok "Using AOSP Clang: $AOSP_CLANG_PATH"
+    elif [ -d "$GCC_PATH" ]; then
+        export PATH="$GCC_PATH/bin:$PATH"
+        CROSS_COMPILE="aarch64-linux-android-"
+        CC="${CROSS_COMPILE}gcc"
+        log_ok "Using GCC: $GCC_PATH"
+    else
+        # Try system toolchain
+        if command -v aarch64-linux-gnu-gcc &>/dev/null; then
+            CROSS_COMPILE="aarch64-linux-gnu-"
+            CC="${CROSS_COMPILE}gcc"
+            log_ok "Using system GCC"
+        elif command -v aarch64-linux-android-gcc &>/dev/null; then
+            CROSS_COMPILE="aarch64-linux-android-"
+            CC="${CROSS_COMPILE}gcc"
+            log_ok "Using system Android GCC"
+        elif command -v clang &>/dev/null; then
+            CC="clang"
+            log_ok "Using system clang"
+        else
+            log_error "No suitable toolchain found!"
+            log_error "Install one of:"
+            log_error "  1. Proton Clang: https://github.com/kdrag0n/proton-clang"
+            log_error "  2. AOSP Clang:  Prebuilt from Android source"
+            log_error "  3. Cross GCC:   sudo apt install gcc-aarch64-linux-gnu"
+            exit 1
+        fi
+    fi
 
-  info "Cloning KernelSU Next …"
-  # Попробуем как submodule, иначе — прямой clone
-  GIT_TERMINAL_PROMPT=0 git -C "$KERNEL_DIR" submodule update --init --recursive 2>/dev/null || \
-  GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
-    --config "credential.helper=" \
-    https://github.com/KernelSU-Next/KernelSU \
-    "$ksu_dir" \
-    || die "Не удалось клонировать KernelSU Next"
-
-  # Запускаем setup.sh если он есть (прописывает хуки в Makefile)
-  if [ -f "$ksu_dir/kernel/setup.sh" ]; then
-    bash "$ksu_dir/kernel/setup.sh" -o "$ksu_dir" 2>/dev/null || true
-  fi
-
-  ok "KernelSU Next ready."
+    # Enable ccache if available
+    if command -v ccache &>/dev/null; then
+        CCACHE="ccache "
+        log_ok "CCache enabled"
+    fi
 }
 
-# ================================================================
-# Step 2: SUSFS 1.5.5 MOD legacy patch  (Linux 4.14)
-# ================================================================
+check_kernel_source() {
+    local kernel_dir="$1"
 
-# Загрузить патч автоматически — несколько источников
-download_susfs_patch() {
-  local target="$1"
-  mkdir -p "$(dirname "$target")"
+    if [ ! -d "$kernel_dir" ]; then
+        log_error "Kernel source not found: $kernel_dir"
+        return 1
+    fi
 
-  info "Автозагрузка SUSFS patch для Linux 4.14 …"
+    if [ ! -f "$kernel_dir/Makefile" ]; then
+        log_error "Not a valid kernel source (missing Makefile): $kernel_dir"
+        return 1
+    fi
 
-  # ── Источник A: клонируем susfs4ksu и берём патч ─────────────
-  local tmp_repo
-  tmp_repo=$(mktemp -d)
-  if GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
-       --config "credential.helper=" \
-       https://github.com/sidex15/susfs4ksu-begonia.git \
-       "$tmp_repo/repo" 2>/dev/null; then
+    log_ok "Kernel source verified: $kernel_dir"
+    return 0
+}
 
-    # Ищем любой патч для 4.14 в kernel_patches/
-    local found
-    # Приоритет: явные имена, потом glob
-    for candidate in \
-      "$tmp_repo/repo/kernel_patches/50_add_susfs_in_kernel-4.14.patch" \
-      "$tmp_repo/repo/kernel_patches/add_susfs_in_kernel-4.14.patch" \
-      $(find "$tmp_repo/repo/kernel_patches" -name "*4.14*.patch" 2>/dev/null | sort | head -1) \
-      $(find "$tmp_repo/repo/kernel_patches" -name "*4.14*"       2>/dev/null | sort | head -1)
-    do
-      if [ -f "$candidate" ] && grep -q "susfs" "$candidate" 2>/dev/null; then
-        found="$candidate"
-        break
-      fi
+apply_patches() {
+    local kernel_dir="$1"
+
+    local patches_dir="${PROJECT_DIR}/patches"
+    local patch_count=$(find "$patches_dir" -name "*.patch" -type f 2>/dev/null | wc -l)
+
+    if [ "$patch_count" -eq 0 ]; then
+        log_warn "No patches to apply"
+        return 0
+    fi
+
+    log_info "Applying $patch_count Infinity Kernel patches..."
+
+    local applied=0
+    local failed=0
+
+    for patch_file in $(find "$patches_dir" -name "*.patch" -type f | sort); do
+        local patch_name=$(basename "$patch_file")
+
+        if cd "$kernel_dir" && git apply --3way --fuzz=3 "$patch_file" 2>/dev/null; then
+            log_ok "  $patch_name"
+            ((applied++))
+        elif cd "$kernel_dir" && patch -p1 --fuzz=3 --no-backup-if-mismatch < "$patch_file" 2>/dev/null; then
+            log_ok "  $patch_name (patch cmd)"
+            ((applied++))
+        else
+            log_warn "  $patch_name - FAILED (may need manual resolution)"
+            ((failed++))
+        fi
     done
 
-    if [ -n "$found" ]; then
-      cp "$found" "$target"
-      rm -rf "$tmp_repo"
-      ok "SUSFS patch: $(basename "$found")  (из susfs4ksu репозитория)"
-      return 0
+    # Copy custom files
+    log_info "Installing custom Infinity Kernel files..."
+
+    # Charging driver
+    if [ -d "${PROJECT_DIR}/drivers/charging" ]; then
+        mkdir -p "${kernel_dir}/drivers/charging"
+        cp "${PROJECT_DIR}/drivers/charging/"*.c "${kernel_dir}/drivers/charging/" 2>/dev/null || true
+        cp "${PROJECT_DIR}/drivers/charging/Makefile" "${kernel_dir}/drivers/charging/" 2>/dev/null || true
+        log_ok "  Charging control driver installed"
     fi
-    warn "susfs4ksu клонирован, но патч для 4.14 не найден в kernel_patches/"
-  else
-    warn "Не удалось клонировать susfs4ksu — пробуем прямые URL"
-  fi
-  rm -rf "$tmp_repo"
 
-  # ── Источник B: прямые URL известных релизов ─────────────────
-  local urls=(
-    "https://raw.githubusercontent.com/sidex15/susfs4ksu/main/kernel_patches/50_add_susfs_in_kernel-4.14.patch"
-    "https://raw.githubusercontent.com/sidex15/susfs4ksu/main/kernel_patches/add_susfs_in_kernel-4.14.patch"
-    "https://raw.githubusercontent.com/sidex15/susfs4ksu/kernel-4.14/kernel_patches/add_susfs_in_kernel.patch"
-  )
-  for url in "${urls[@]}"; do
-    if curl -fsSL --retry 3 --retry-delay 2 -o "$target" "$url" 2>/dev/null; then
-      if [ -s "$target" ] && grep -q "susfs" "$target" 2>/dev/null; then
-        ok "SUSFS patch загружен: $url"
-        return 0
-      fi
-      rm -f "$target"
+    # Header files
+    if [ -f "${PROJECT_DIR}/include/linux/infinity_charging_control.h" ]; then
+        cp "${PROJECT_DIR}/include/linux/infinity_charging_control.h" \
+           "${kernel_dir}/include/linux/" 2>/dev/null
+        log_ok "  Header files installed"
     fi
-  done
 
-  # ── Источник не найден ─────────────────────────────────────────
-  die "Не удалось загрузить SUSFS patch для Linux 4.14.
+    # Defconfig
+    if [ -f "${PROJECT_DIR}/arch/arm64/configs/infinity_defconfig" ]; then
+        mkdir -p "${kernel_dir}/arch/arm64/configs/"
+        cp "${PROJECT_DIR}/arch/arm64/configs/infinity_defconfig" \
+           "${kernel_dir}/arch/arm64/configs/" 2>/dev/null
+        log_ok "  Defconfig installed"
+    fi
 
-  Положите патч вручную:
-    mkdir -p $KERNEL_DIR/patches
-    cp /path/to/susfs-4.14.patch \\
-       $KERNEL_DIR/patches/susfs-1.5.5-mod-linux-4.14.patch
-
-  Или укажите рабочий URL репозитория:
-    export SUSFS_PATCH_URL=https://raw.githubusercontent.com/...
-  и перезапустите скрипт."
+    log_info "Patches applied: $applied, Failed: $failed"
+    return $failed
 }
 
-apply_susfs_patch() {
-  info "SUSFS 1.5.5 MOD legacy patch …"
-
-  SUSFS_MARKER="$KERNEL_DIR/.susfs_applied"
-  if [ -f "$SUSFS_MARKER" ]; then
-    info "SUSFS: уже применён (найден маркер $SUSFS_MARKER)"
-    return
-  fi
-
-  SUSFS_PATCH="${SUSFS_PATCH:-$KERNEL_DIR/patches/susfs-1.5.5-mod-linux-4.14.patch}"
-
-  # ── Автозагрузка если файла нет ──────────────────────────────
-  if [ ! -f "$SUSFS_PATCH" ]; then
-    download_susfs_patch "$SUSFS_PATCH"
-  else
-    info "SUSFS patch найден: $SUSFS_PATCH"
-  fi
-
-  # ── Минимальная валидация ─────────────────────────────────────
-  if ! grep -q "susfs" "$SUSFS_PATCH" 2>/dev/null; then
-    die "Файл '$SUSFS_PATCH' не содержит SUSFS-кода. Патч повреждён."
-  fi
-
-  # ── Применить ────────────────────────────────────────────────
-  info "Применяем патч …"
-  cd "$KERNEL_DIR"
-  # --forward: пропустить если хотя бы частично уже применён
-  # --reject-file: сохранить отклонённые хаймы для отладки
-  if ! patch -p1 --forward < "$SUSFS_PATCH"; then
-    # Проверяем — может уже частично применён
-    if patch -p1 --dry-run --forward < "$SUSFS_PATCH" 2>&1 | grep -q "Reversed"; then
-      warn "Патч уже применён (reverse-check пройден) — продолжаем."
-    else
-      die "SUSFS patch не применился. Проверьте .rej файлы в $KERNEL_DIR"
-    fi
-  fi
-
-  touch "$SUSFS_MARKER"
-  ok "SUSFS patch применён."
-}
-
-# ================================================================
-# Step 3: Слияние конфига
-# ================================================================
-merge_config() {
-  info "Merging KSU+SUSFS config …"
-  cd "$KERNEL_DIR"
-
-  local fragment="$ANYKERNEL_DIR/kernel_config/vayu_ksu_susfs.config"
-  [ -f "$fragment" ] || die "Не найден конфиг-фрагмент: $fragment"
-
-  make O="$OUT_DIR" ARCH=$ARCH $DEFCONFIG
-  scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" \
-    "$OUT_DIR/.config" \
-    "$fragment"
-
-  yes "" | make O="$OUT_DIR" ARCH=$ARCH olddefconfig
-  ok "Config merged."
-}
-
-# ================================================================
-# Step 4: Сборка ядра
-# ================================================================
 build_kernel() {
-  info "Building kernel (jobs: $JOBS) …"
+    local kernel_dir="$1"
 
-  local build_flags=(
-    O="$OUT_DIR"
-    ARCH="$ARCH"
-    -j"$JOBS"
-  )
+    cd "$kernel_dir"
 
-  if [ -n "${CLANG_PATH:-}" ] && [ -x "$CLANG_PATH/clang" ]; then
-    info "Compiler: Clang ($CLANG_PATH)"
-    build_flags+=(
-      CC="$CLANG_PATH/clang"
-      CLANG_TRIPLE="aarch64-linux-gnu-"
-      CROSS_COMPILE="$CROSS_COMPILE"
-      CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT"
-      LD="$CLANG_PATH/ld.lld"
-      AR="$CLANG_PATH/llvm-ar"
-      NM="$CLANG_PATH/llvm-nm"
-      OBJCOPY="$CLANG_PATH/llvm-objcopy"
-      OBJDUMP="$CLANG_PATH/llvm-objdump"
-      STRIP="$CLANG_PATH/llvm-strip"
-    )
-  else
-    warn "Clang не найден — пытаемся установить LLVM/Clang"
-    if command -v clang >/dev/null 2>&1; then
-      build_flags+=(CC="clang" LD="ld.lld")
-    else
-      echo "ERROR: clang toolchain not found"
-      exit 1
+    # Set environment
+    export ARCH=$ARCH
+    export CROSS_COMPILE=$CROSS_COMPILE
+    export SUBARCH=$ARCH
+
+    if [ -n "$CLANG_TRIPLE" ]; then
+        export CLANG_TRIPLE=$CLANG_TRIPLE
     fi
-    build_flags+=(
-      CROSS_COMPILE="$CROSS_COMPILE"
-      CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT"
-    )
-  fi
 
-  cd "$KERNEL_DIR"
-  make "${build_flags[@]}" Image.gz-dtb dtbs
+    # Clean if requested
+    if [ "$CLEAN_BUILD" -eq 1 ]; then
+        log_info "Cleaning kernel..."
+        make mrproper 2>/dev/null || true
+    fi
 
-  local img="$OUT_DIR/arch/arm64/boot/Image.gz-dtb"
-  [ -f "$img" ] || die "Ядро не собралось: $img не найден"
-  ok "Kernel: $img  ($(du -sh "$img" | cut -f1))"
+    # Apply defconfig
+    log_info "Applying defconfig: $DEFCONFIG"
+    make $DEFCONFIG
+
+    # Build
+    log_info "Building Infinity Kernel..."
+    log_info "  ARCH=$ARCH"
+    log_info "  JOBS=$JOBS"
+    log_info "  CC=${CCACHE}${CC}"
+
+    if [ -n "$CC" ] && [[ "$CC" == *"clang"* ]]; then
+        # Clang build
+        make -j"$JOBS" \
+            CC="${CCACHE}${CC}" \
+            LD="${LD:-ld.lld}" \
+            AR="${AR:-llvm-ar}" \
+            NM="${NM:-llvm-nm}" \
+            OBJCOPY="${OBJCOPY:-llvm-objcopy}" \
+            OBJDUMP="${OBJDUMP:-llvm-objdump}" \
+            STRIP="${STRIP:-llvm-strip}" \
+            2>&1 | tee "${OUT_DIR}/build.log"
+    else
+        # GCC build
+        make -j"$JOBS" \
+            CC="${CCACHE}${CROSS_COMPILE}gcc" \
+            2>&1 | tee "${OUT_DIR}/build.log"
+    fi
+
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        log_error "Kernel build FAILED! Check build.log for details."
+        exit 1
+    fi
+
+    log_ok "Kernel built successfully!"
 }
 
-# ================================================================
-# Step 5: Упаковка AnyKernel3 ZIP
-# ================================================================
-pack_zip() {
-  info "Packing AnyKernel3 flash ZIP …"
+create_anykernel_zip() {
+    local kernel_dir="$1"
+    local zip_name="InfinityKernel-v${KERNEL_VERSION}-vayu-$(date +%Y%m%d-%H%M%S).zip"
+    local staging="${OUT_DIR}/anykernel_staging"
 
-  [ -f "$ANYKERNEL_DIR/anykernel.sh" ] || \
-    die "anykernel.sh не найден в $ANYKERNEL_DIR"
+    log_info "Creating AnyKernel3 ZIP: $zip_name"
 
-  cp -v "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" "$ANYKERNEL_DIR/Image.gz-dtb"
+    # Clean staging
+    rm -rf "$staging"
+    mkdir -p "$staging"
 
-  local ts zip_name zip_out
-  ts=$(date +%Y%m%d_%H%M)
-  zip_name="TurboOS_KSU_SUSFS_vayu_A13-A16_${ts}.zip"
-  zip_out="$ANYKERNEL_DIR/$zip_name"
+    # Copy AnyKernel3 template
+    cp -r "${ANYKERNEL_DIR}/"* "$staging/"
 
-  cd "$ANYKERNEL_DIR"
-  zip -r9 "$zip_out" \
-    anykernel.sh \
-    Image.gz-dtb \
-    META-INF/ \
-    tools/ \
-    modules/ \
-    patch/ \
-    ramdisk/ \
-    -x "*.git*" \
-    -x "kernel_config/*" \
-    -x "build_kernel.sh" \
-    -x "*.placeholder" \
-    -x "*.md" \
-    -x ".circleci/*" \
-    -x "SUSFS_FIX_README.md"
+    # Create kernel directory and copy kernel image
+    mkdir -p "$staging/kernel"
 
-  ok "ZIP: $zip_out  ($(du -sh "$zip_out" | cut -f1))"
+    # Detect kernel image format
+    if [ -f "${kernel_dir}/arch/${ARCH}/boot/Image.gz-dtb" ]; then
+        cp "${kernel_dir}/arch/${ARCH}/boot/Image.gz-dtb" "$staging/kernel/"
+        log_ok "  Using Image.gz-dtb"
+    elif [ -f "${kernel_dir}/arch/${ARCH}/boot/Image.gz" ]; then
+        cp "${kernel_dir}/arch/${ARCH}/boot/Image.gz" "$staging/kernel/"
+        log_ok "  Using Image.gz"
+    elif [ -f "${kernel_dir}/arch/${ARCH}/boot/Image" ]; then
+        cp "${kernel_dir}/arch/${ARCH}/boot/Image" "$staging/kernel/"
+        log_ok "  Using Image (uncompressed)"
+    else
+        log_error "  No kernel image found in arch/${ARCH}/boot/"
+        exit 1
+    fi
 
-  # Для CircleCI — сохраняем путь в файл для шага store_artifacts
-  echo "$zip_out" > "$ANYKERNEL_DIR/.last_zip_path"
+    # Copy DTB files if present
+    if [ -f "${kernel_dir}/arch/${ARCH}/boot/dts/qcom/sm7325-poco-vayu.dtb" ]; then
+        mkdir -p "$staging/dtb"
+        cp "${kernel_dir}/arch/${ARCH}/boot/dts/qcom/"*.dtb "$staging/dtb/" 2>/dev/null || true
+        log_ok "  DTB files copied"
+    fi
+
+    # Copy DTBO if present
+    if [ -f "${kernel_dir}/arch/${ARCH}/boot/dtbo.img" ]; then
+        cp "${kernel_dir}/arch/${ARCH}/boot/dtbo.img" "$staging/"
+        log_ok "  DTBO copied"
+    fi
+
+    # Inject root manager if specified
+    if [ -n "$ROOT_MANAGER" ]; then
+        case "$ROOT_MANAGER" in
+            ksu|kernelsu)
+                log_info "  Injecting KernelSU support..."
+                # KernelSU is built into the kernel via KCONFIG
+                # The AnyKernel script preserves KSU ramdisk modifications
+                ;;
+            magisk)
+                log_info "  Preserving Magisk ramdisk..."
+                # Magisk patches ramdisk - our AnyKernel script preserves it
+                ;;
+            apatch|sukisu|sukisu_ultra)
+                log_info "  Preserving APatch/Sukisu ramdisk..."
+                ;;
+            *)
+                log_warn "  Unknown root manager: $ROOT_MANAGER"
+                ;;
+        esac
+    fi
+
+    # Set permissions
+    chmod +x "$staging/anykernel.sh" 2>/dev/null || true
+    chmod +x "$staging/META-INF/com/google/android/update-binary" 2>/dev/null || true
+    chmod +x "$staging/tools/infinity_init.sh" 2>/dev/null || true
+
+    # Create ZIP
+    cd "$staging"
+    zip -r -9 "${OUT_DIR}/$zip_name" . -x ".git/*"
+
+    # Calculate hash
+    cd "$OUT_DIR"
+    md5sum "$zip_name" > "${zip_name}.md5sum"
+    sha256sum "$zip_name" > "${zip_name}.sha256"
+
+    log_ok "AnyKernel ZIP created: ${OUT_DIR}/$zip_name"
+    log_ok "MD5:    $(cat ${zip_name}.md5sum | cut -d' ' -f1)"
+    log_ok "SHA256: $(cat ${zip_name}.sha256 | cut -d' ' -f1)"
 }
 
-# ================================================================
-# Main
-# ================================================================
-main() {
-  info "=== LawRun vayu  KSU+SUSFS build ==="
-  info "ANYKERNEL_DIR: $ANYKERNEL_DIR"
-  info "KERNEL_DIR:    $KERNEL_DIR (до клонирования может измениться)"
-  echo ""
+# ==============================================================================
+# MAIN
+# ==============================================================================
 
-  clone_kernel_source   # клонировать если нет
-  info "KERNEL_DIR (final): $KERNEL_DIR"
+print_banner
 
-  setup_ksu
-  apply_susfs_patch
-  merge_config
-  build_kernel
-  pack_zip
+# Parse arguments
+KERNEL_SOURCE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c|--clean)
+            CLEAN_BUILD=1
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -j|--jobs)
+            JOBS="$2"
+            shift 2
+            ;;
+        -r|--root)
+            ROOT_MANAGER="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS] [KERNEL_SOURCE_DIR]"
+            echo ""
+            echo "Options:"
+            echo "  -c, --clean              Clean build (make mrproper)"
+            echo "  -v, --verbose            Verbose output"
+            echo "  -j, --jobs N             Number of parallel jobs (default: $(nproc))"
+            echo "  -r, --root <manager>     Root manager: ksu, magisk, apatch"
+            echo "  -h, --help               Show this help"
+            echo ""
+            echo "Example:"
+            echo "  $0 ~/android/kernel/xiaomi-vayu"
+            echo "  $0 -c -r ksu ~/android/kernel/xiaomi-vayu"
+            echo "  $0 -j8 ~/android/kernel/xiaomi-vayu"
+            exit 0
+            ;;
+        *)
+            KERNEL_SOURCE="$1"
+            shift
+            ;;
+    esac
+done
 
-  ok "=== All done! ==="
-}
+# Create output directory
+mkdir -p "$OUT_DIR"
 
-main "$@"
+# Detect toolchain
+detect_toolchain
 
-# CI non-interactive config
-export KCONFIG_NONINTERACTIVE=1
+# If no kernel source specified, try to find it
+if [ -z "$KERNEL_SOURCE" ]; then
+    # Try common locations
+    for path in \
+        "$HOME/android/kernel/xiaomi-vayu" \
+        "$HOME/android/kernel/vayu" \
+        "$HOME/kernel/xiaomi-vayu" \
+        "$HOME/LineageOS/kernel/xiaomi/vayu" \
+        "$HOME/LineageOS/android_kernel_xiaomi_vayu"; do
+        if check_kernel_source "$path" 2>/dev/null; then
+            KERNEL_SOURCE="$path"
+            break
+        fi
+    done
+
+    if [ -z "$KERNEL_SOURCE" ]; then
+        log_error "No kernel source directory specified or found!"
+        log_error ""
+        log_error "Please specify the kernel source directory:"
+        log_error "  $0 /path/to/kernel/source"
+        log_error ""
+        log_error "Clone the Poco X3 Pro kernel source first:"
+        log_error "  git clone https://github.com/XiaomiKernel-Devices/android_kernel_xiaomi_vayu.git"
+        exit 1
+    fi
+fi
+
+# Verify kernel source
+check_kernel_source "$KERNEL_SOURCE"
+
+# Apply patches
+log_info "========================================="
+log_info "  Step 1: Applying Infinity Patches"
+log_info "========================================="
+apply_patches "$KERNEL_SOURCE"
+
+# Build kernel
+log_info "========================================="
+log_info "  Step 2: Building Infinity Kernel"
+log_info "========================================="
+build_kernel "$KERNEL_SOURCE"
+
+# Create AnyKernel ZIP
+log_info "========================================="
+log_info "  Step 3: Creating AnyKernel3 ZIP"
+log_info "========================================="
+create_anykernel_zip "$KERNEL_SOURCE"
+
+# Done!
+echo ""
+echo -e "${GREEN}${BOLD}"
+echo "  ╔═══════════════════════════════════════════╗"
+echo "  ║   INFINITY KERNEL BUILD COMPLETE!         ║"
+echo "  ╚═══════════════════════════════════════════╝"
+echo -e "${NC}"
+echo -e "Output: ${CYAN}${OUT_DIR}/$(ls -t ${OUT_DIR}/*.zip 2>/dev/null | head -1 | xargs basename)${NC}"
+echo ""
+echo -e "${YELLOW}Flash via TWRP/Recovery:${NC}"
+echo -e "  1. Transfer ZIP to device"
+echo -e "  2. Boot to recovery"
+echo -e "  3. Flash the ZIP"
+echo -e "  4. Reboot"
+echo ""
+echo -e "${YELLOW}Control charging bypass:${NC}"
+echo -e "  echo 1 > /sys/devices/platform/.../infinity_charging/bypass_enable"
+echo -e "  echo 3 > /sys/devices/platform/.../infinity_charging/gaming_mode"
+echo ""

@@ -1,14 +1,13 @@
-# Infinity Kernel v1.0.41
+# Infinity Kernel v1.0.43
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 #
-# v1.0.41 changes:
-#   - Fixed: cross-bin wrapper broke HOST builds (fixdep used aarch64-as
-#     which doesn't understand --64). Removed wrapper entirely.
-#   - Instead: CC now embeds --target=aarch64-linux-gnu so Clang
-#     automatically invokes aarch64-linux-gnu-as for .S files, while
-#     HOSTCC=gcc still uses the host x86_64 assembler.
-#   - v1.0.40 fix preserved (VDSO assembler).
+# v1.0.43 changes:
+#   - Fixed: VDSO still called /usr/bin/as because kernel passes
+#     -no-integrated-as which forces external assembler.
+#   - Wrapper now FILTERS OUT -no-integrated-as from all args,
+#     forcing Clang 23 to use its mature built-in aarch64 assembler.
+#   - v1.0.42 approach (wrapper with --target) preserved.
 #   - Toolchain: Clang 23 via official LLVM apt repository (apt.llvm.org).
 #     No git clone, no symlinks, no glibc issues. Clang 23 installs to
 #     /usr/lib/llvm-23/bin/ with all LLVM tools (ld.lld, llvm-ar, etc.).
@@ -403,20 +402,29 @@ jobs:
             CLANG_DIR="/usr/lib/llvm-23/bin"
             export PATH="$CLANG_DIR:$PATH"
 
+            # ── Clang cross-compiler wrapper ──────────────────────
+            # 1) --target=aarch64-linux-gnu: Clang knows target triple
+            # 2) Filters -no-integrated-as: kernel 4.14 adds this flag,
+            #    but Clang 23's integrated assembler is mature and handles
+            #    all aarch64 instructions. Without this filter, Clang
+            #    invokes /usr/bin/as (x86_64) which fails on -EL.
+            CLANG_WRAPPER="/tmp/infinity-kernel-build/clang-aarch64"
+            printf '#!/bin/bash\n_ARGS=()\nfor _a in "$@"; do\n  case "$_a" in\n    -no-integrated-as) continue;;\n  esac\n  _ARGS+=("$_a")\ndone\nexec /usr/lib/llvm-23/bin/clang --target=aarch64-linux-gnu "${_ARGS[@]}"\n' > "$CLANG_WRAPPER"
+            chmod +x "$CLANG_WRAPPER"
+
             echo "clang:     $(which clang) -> $(clang --version 2>&1 | head -1)"
-            echo "clang-23:  $(which clang-23) -> $(clang-23 --version 2>&1 | head -1)"
-            echo "clang-13:  $(which clang-13) -> $(clang-13 --version 2>&1 | head -1)"
+            echo "wrapper:    $CLANG_WRAPPER"
             echo "as:        $(which as)"
             echo "aarch64-as: $(which aarch64-linux-gnu-as 2>/dev/null || echo 'not found')"
             echo "ld.lld:    $(which ld.lld)"
             echo "aarch64:   $(which aarch64-linux-gnu-gcc)"
 
             # ── Make flags ───────────────────────────────────────
-            # CC embeds --target so Clang auto-selects aarch64-linux-gnu-as
-            # (not host /usr/bin/as). HOSTCC=gcc uses host tools untouched.
+            # CC points to wrapper (single path, no space issues).
+            # HOSTCC=gcc uses host tools untouched.
             COMMON_MAKE="O=out \
               ARCH=arm64 \
-              CC=\"$CLANG_DIR/clang --target=aarch64-linux-gnu\" \
+              CC=$CLANG_WRAPPER \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-gnu- \
               CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
@@ -520,21 +528,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.41.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.41.zip ($(du -sh /tmp/infinity-kernel-v1.0.41.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.43.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.43.zip ($(du -sh /tmp/infinity-kernel-v1.0.43.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.41.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.41.zip ($(du -sh /tmp/infinity-kernel-v1.0.41.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.43.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.43.zip ($(du -sh /tmp/infinity-kernel-v1.0.43.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.41.zip
-          destination: infinity-kernel-v1.0.41.zip
+          path: /tmp/infinity-kernel-v1.0.43.zip
+          destination: infinity-kernel-v1.0.43.zip
 
 workflows:
   infinity_build:
