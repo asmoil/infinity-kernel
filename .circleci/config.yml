@@ -1,13 +1,14 @@
-# Infinity Kernel v1.0.43
+# Infinity Kernel v1.0.44
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 #
-# v1.0.43 changes:
-#   - Fixed: VDSO still called /usr/bin/as because kernel passes
-#     -no-integrated-as which forces external assembler.
-#   - Wrapper now FILTERS OUT -no-integrated-as from all args,
-#     forcing Clang 23 to use its mature built-in aarch64 assembler.
-#   - v1.0.42 approach (wrapper with --target) preserved.
+# v1.0.44 changes:
+#   - Fixed: Clang 23 integrated assembler rejects VDSO named args
+#     (shift=1) in gettimeofday.S macros.
+#   - New approach: keep -no-integrated-as (use external GNU as),
+#     but add --gcc-toolchain=/usr so Clang finds aarch64-linux-gnu-as
+#     at /usr/bin/ instead of falling back to host /usr/bin/as.
+#   - No more arg filtering in wrapper.
 #   - Toolchain: Clang 23 via official LLVM apt repository (apt.llvm.org).
 #     No git clone, no symlinks, no glibc issues. Clang 23 installs to
 #     /usr/lib/llvm-23/bin/ with all LLVM tools (ld.lld, llvm-ar, etc.).
@@ -403,13 +404,13 @@ jobs:
             export PATH="$CLANG_DIR:$PATH"
 
             # ── Clang cross-compiler wrapper ──────────────────────
-            # 1) --target=aarch64-linux-gnu: Clang knows target triple
-            # 2) Filters -no-integrated-as: kernel 4.14 adds this flag,
-            #    but Clang 23's integrated assembler is mature and handles
-            #    all aarch64 instructions. Without this filter, Clang
-            #    invokes /usr/bin/as (x86_64) which fails on -EL.
+            # --target=aarch64-linux-gnu: tells Clang the target triple
+            # --gcc-toolchain=/usr: tells Clang to find cross-tools at
+            #   /usr/bin/aarch64-linux-gnu-as (NOT host /usr/bin/as).
+            # This works with -no-integrated-as (kernel 4.14 default),
+            # using the mature GNU aarch64 assembler for VDSO.
             CLANG_WRAPPER="/tmp/infinity-kernel-build/clang-aarch64"
-            printf '#!/bin/bash\n_ARGS=()\nfor _a in "$@"; do\n  case "$_a" in\n    -no-integrated-as) continue;;\n  esac\n  _ARGS+=("$_a")\ndone\nexec /usr/lib/llvm-23/bin/clang --target=aarch64-linux-gnu "${_ARGS[@]}"\n' > "$CLANG_WRAPPER"
+            printf '#!/bin/bash\nexec /usr/lib/llvm-23/bin/clang --target=aarch64-linux-gnu --gcc-toolchain=/usr "$@"\n' > "$CLANG_WRAPPER"
             chmod +x "$CLANG_WRAPPER"
 
             echo "clang:     $(which clang) -> $(clang --version 2>&1 | head -1)"
@@ -528,21 +529,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.43.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.43.zip ($(du -sh /tmp/infinity-kernel-v1.0.43.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.44.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.44.zip ($(du -sh /tmp/infinity-kernel-v1.0.44.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.43.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.43.zip ($(du -sh /tmp/infinity-kernel-v1.0.43.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.44.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.44.zip ($(du -sh /tmp/infinity-kernel-v1.0.44.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.43.zip
-          destination: infinity-kernel-v1.0.43.zip
+          path: /tmp/infinity-kernel-v1.0.44.zip
+          destination: infinity-kernel-v1.0.44.zip
 
 workflows:
   infinity_build:
