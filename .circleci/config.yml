@@ -1,12 +1,14 @@
-# Infinity Kernel v1.0.40
+# Infinity Kernel v1.0.41
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 #
-# v1.0.40 changes:
-#   - Fixed: VDSO build fail — /usr/bin/as (x86_64) was used instead of
-#     aarch64-linux-gnu-as. Created cross-tool wrapper dir with symlinks
-#     so clang finds the correct aarch64 assembler/linker first in PATH.
-#   - v1.0.39 fix preserved (Kconfig # comments).
+# v1.0.41 changes:
+#   - Fixed: cross-bin wrapper broke HOST builds (fixdep used aarch64-as
+#     which doesn't understand --64). Removed wrapper entirely.
+#   - Instead: CC now embeds --target=aarch64-linux-gnu so Clang
+#     automatically invokes aarch64-linux-gnu-as for .S files, while
+#     HOSTCC=gcc still uses the host x86_64 assembler.
+#   - v1.0.40 fix preserved (VDSO assembler).
 #   - Toolchain: Clang 23 via official LLVM apt repository (apt.llvm.org).
 #     No git clone, no symlinks, no glibc issues. Clang 23 installs to
 #     /usr/lib/llvm-23/bin/ with all LLVM tools (ld.lld, llvm-ar, etc.).
@@ -399,40 +401,22 @@ jobs:
 
             # ── Toolchain paths (LLVM 23 via apt.llvm.org) ────────
             CLANG_DIR="/usr/lib/llvm-23/bin"
-
-            # ── Cross-tool wrapper (fix VDSO: clang must find aarch64-as) ──
-            # Clang invokes 'as' from PATH for .S files. Without this,
-            # /usr/bin/as (x86_64) is found, which doesn't support -EL.
-            CROSS_BIN="/tmp/infinity-kernel-build/cross-bin"
-            mkdir -p "$CROSS_BIN"
-            for tool in as ar ld nm objcopy objdump strip; do
-              tgt="aarch64-linux-gnu-${tool}"
-              if command -v "$tgt" >/dev/null 2>&1; then
-                ln -sf "$(command -v "$tgt")" "$CROSS_BIN/$tool"
-              fi
-            done
-            # arm-linux-gnueabi tools for COMPAT VDSO32
-            for tool in as ar ld; do
-              tgt="arm-linux-gnueabi-${tool}"
-              if command -v "$tgt" >/dev/null 2>&1; then
-                ln -sf "$(command -v "$tgt")" "$CROSS_BIN/arm-${tool}"
-              fi
-            done
-            export PATH="$CROSS_BIN:$CLANG_DIR:$PATH"
-            echo "Cross-bin wrapper: $CROSS_BIN"
-            ls -la "$CROSS_BIN/"
+            export PATH="$CLANG_DIR:$PATH"
 
             echo "clang:     $(which clang) -> $(clang --version 2>&1 | head -1)"
             echo "clang-23:  $(which clang-23) -> $(clang-23 --version 2>&1 | head -1)"
             echo "clang-13:  $(which clang-13) -> $(clang-13 --version 2>&1 | head -1)"
             echo "as:        $(which as)"
+            echo "aarch64-as: $(which aarch64-linux-gnu-as 2>/dev/null || echo 'not found')"
             echo "ld.lld:    $(which ld.lld)"
             echo "aarch64:   $(which aarch64-linux-gnu-gcc)"
 
             # ── Make flags ───────────────────────────────────────
+            # CC embeds --target so Clang auto-selects aarch64-linux-gnu-as
+            # (not host /usr/bin/as). HOSTCC=gcc uses host tools untouched.
             COMMON_MAKE="O=out \
               ARCH=arm64 \
-              CC=$CLANG_DIR/clang \
+              CC=\"$CLANG_DIR/clang --target=aarch64-linux-gnu\" \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-gnu- \
               CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
@@ -536,21 +520,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.40.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.40.zip ($(du -sh /tmp/infinity-kernel-v1.0.40.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.41.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.41.zip ($(du -sh /tmp/infinity-kernel-v1.0.41.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.40.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.40.zip ($(du -sh /tmp/infinity-kernel-v1.0.40.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.41.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.41.zip ($(du -sh /tmp/infinity-kernel-v1.0.41.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.40.zip
-          destination: infinity-kernel-v1.0.40.zip
+          path: /tmp/infinity-kernel-v1.0.41.zip
+          destination: infinity-kernel-v1.0.41.zip
 
 workflows:
   infinity_build:
