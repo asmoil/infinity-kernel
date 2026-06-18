@@ -1,17 +1,18 @@
-# Infinity Kernel v1.0.44
+# Infinity Kernel v1.0.46
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 #
-# v1.0.44 changes:
-#   - Fixed: Clang 23 integrated assembler rejects VDSO named args
-#     (shift=1) in gettimeofday.S macros.
-#   - New approach: keep -no-integrated-as (use external GNU as),
-#     but add --gcc-toolchain=/usr so Clang finds aarch64-linux-gnu-as
-#     at /usr/bin/ instead of falling back to host /usr/bin/as.
-#   - No more arg filtering in wrapper.
+# v1.0.46 changes:
+#   - Fixed VDSO assembler (6th attempt, NUCLEAR fix):
+#     Wrapper now DETECTS vdso/*.S files in args and reroutes them
+#     to aarch64-linux-gnu-gcc (which knows its own aarch64 assembler).
+#     Clang-specific flags are stripped for VDSO compilation.
+#     All non-VDSO files still compile with Clang 23 + -B + PATH prepend.
+#   - Why previous attempts failed:
+#     v1.0.44: --gcc-toolchain=/usr — Clang still found /usr/bin/as (x86_64)
+#     v1.0.45: -B <dir> — Clang's internal toolchain detection overrides -B
+#     The ONLY reliable fix: don't let Clang touch VDSO .S files at all.
 #   - Toolchain: Clang 23 via official LLVM apt repository (apt.llvm.org).
-#     No git clone, no symlinks, no glibc issues. Clang 23 installs to
-#     /usr/lib/llvm-23/bin/ with all LLVM tools (ld.lld, llvm-ar, etc.).
 #   - SuSFS v2.1.0 (from susfs4ksu for Linux 4.14).
 #   - KernelSU-Next v3.2.0 (latest, matches Alymore Project).
 #   - v1.0.34 fixes preserved (MiCode repo, PROTECTED_CFGS).
@@ -403,22 +404,71 @@ jobs:
             CLANG_DIR="/usr/lib/llvm-23/bin"
             export PATH="$CLANG_DIR:$PATH"
 
-            # ── Clang cross-compiler wrapper ──────────────────────
-            # --target=aarch64-linux-gnu: tells Clang the target triple
-            # --gcc-toolchain=/usr: tells Clang to find cross-tools at
-            #   /usr/bin/aarch64-linux-gnu-as (NOT host /usr/bin/as).
-            # This works with -no-integrated-as (kernel 4.14 default),
-            # using the mature GNU aarch64 assembler for VDSO.
+            # ── Cross-bin directory: as -> aarch64-linux-gnu-as ────
+            # Belt-and-suspenders for non-VDSO Clang compilation.
+            CROSS_BIN="/tmp/infinity-kernel-build/cross-bin"
+            mkdir -p "$CROSS_BIN"
+            ln -sf /usr/bin/aarch64-linux-gnu-as "$CROSS_BIN/as"
+
+            # ═══════════════════════════════════════════════════════
+            # Clang cross-compiler wrapper (VDSO-aware)
+            # ═══════════════════════════════════════════════════════
+            # PROBLEM: Clang 23 with -no-integrated-as can't find
+            #   aarch64-linux-gnu-as. It finds /usr/bin/as (x86_64).
+            #   -B, --gcc-toolchain, CLANG_TRIPLE — all IGNORED by
+            #   Clang's assembler lookup in kernel 4.14 VDSO build.
+            # FIX: Wrapper detects vdso/*.S files and reroutes them
+            #   to aarch64-linux-gnu-gcc which natively uses the
+            #   correct aarch64 assembler. Clang-only flags stripped.
+            # ═══════════════════════════════════════════════════════
             CLANG_WRAPPER="/tmp/infinity-kernel-build/clang-aarch64"
-            printf '#!/bin/bash\nexec /usr/lib/llvm-23/bin/clang --target=aarch64-linux-gnu --gcc-toolchain=/usr "$@"\n' > "$CLANG_WRAPPER"
+            printf '%s\n' \
+              '#!/bin/bash' \
+              '# VDSO-aware Clang wrapper for Infinity Kernel v1.0.46' \
+              '_vdso=0' \
+              'for _a in "$@"; do' \
+              '  case "$_a" in' \
+              '    */vdso/*.S) _vdso=1; break;;' \
+              '  esac' \
+              'done' \
+              'if [ "$_vdso" = "1" ]; then' \
+              '  _args=()' \
+              '  _skip=0' \
+              '  for _a in "$@"; do' \
+              '    [ "$_skip" = "1" ] && { _skip=0; continue; }' \
+              '    case "$_a" in' \
+              '      -no-integrated-as|--target=*|--gcc-toolchain=*) continue;;' \
+              '      -B) _skip=1; continue;;' \
+              '      -B/*) continue;;' \
+              '    esac' \
+              '    _args+=("$_a")' \
+              '  done' \
+              '  exec aarch64-linux-gnu-gcc "${_args[@]}"' \
+              'fi' \
+              'export PATH="/tmp/infinity-kernel-build/cross-bin:$PATH"' \
+              'exec /usr/lib/llvm-23/bin/clang --target=aarch64-linux-gnu --gcc-toolchain=/usr -B /tmp/infinity-kernel-build/cross-bin "$@"' \
+              > "$CLANG_WRAPPER"
             chmod +x "$CLANG_WRAPPER"
 
-            echo "clang:     $(which clang) -> $(clang --version 2>&1 | head -1)"
+            # ── Diagnostics ──────────────────────────────────────
+            echo "=== Toolchain diagnostics ==="
+            echo "clang:      $(which clang) -> $(clang --version 2>&1 | head -1)"
             echo "wrapper:    $CLANG_WRAPPER"
-            echo "as:        $(which as)"
+            echo "as (PATH):  $(which as)"
+            echo "as (cross): $(ls -la $CROSS_BIN/as)"
             echo "aarch64-as: $(which aarch64-linux-gnu-as 2>/dev/null || echo 'not found')"
-            echo "ld.lld:    $(which ld.lld)"
-            echo "aarch64:   $(which aarch64-linux-gnu-gcc)"
+            echo "cross-gcc:  $(which aarch64-linux-gnu-gcc)"
+            echo "ld.lld:     $(which ld.lld)"
+            echo ""
+            echo "=== Wrapper content ==="
+            cat "$CLANG_WRAPPER"
+            echo ""
+            echo "=== Wrapper test (VDSO detection) ==="
+            echo "Testing VDSO route:"
+            "$CLANG_WRAPPER" -c -o /dev/null ../arch/arm64/kernel/vdso/gettimeofday.S -D__ASSEMBLY__ 2>&1 | head -5 || echo "(expected — file may not exist yet)"
+            echo "Testing Clang route (non-VDSO):"
+            echo 'int x;' | "$CLANG_WRAPPER" -x c -c -o /dev/null - 2>&1 | head -3 || true
+            echo "==============================="
 
             # ── Make flags ───────────────────────────────────────
             # CC points to wrapper (single path, no space issues).
@@ -529,21 +579,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.44.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.44.zip ($(du -sh /tmp/infinity-kernel-v1.0.44.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.46.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.46.zip ($(du -sh /tmp/infinity-kernel-v1.0.46.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.44.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.44.zip ($(du -sh /tmp/infinity-kernel-v1.0.44.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.46.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.46.zip ($(du -sh /tmp/infinity-kernel-v1.0.46.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.44.zip
-          destination: infinity-kernel-v1.0.44.zip
+          path: /tmp/infinity-kernel-v1.0.46.zip
+          destination: infinity-kernel-v1.0.46.zip
 
 workflows:
   infinity_build:
