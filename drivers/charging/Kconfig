@@ -1,8 +1,17 @@
+#
+# Infinity Charging Control Driver
+# For Poco X3 Pro (vayu/bhima) - SM8150/SM8250
+#
+menu "Device Drivers"
+    comment "Infinity Kernel Charging Control"
+
 config CHARGING_CONTROL
     tristate "Infinity Charging Control (Gaming Bypass)"
-    default y
     depends on POWER_SUPPLY && THERMAL
+    default y
     help
       Infinity Kernel charging bypass control for gaming.
-      Supports 4 modes (LIGHT/BALANCED/EXTREME/ULTRA) with
-      thermal monitoring and auto-resume.
+      Provides sysfs interface at /sys/kernel/infinity_charging/
+      with charging mode selection and thermal monitoring.
+
+endif # menu

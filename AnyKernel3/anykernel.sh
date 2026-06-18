@@ -1,238 +1,118 @@
-## AnyKernel3 flash script for Infinity Kernel
-## Poco X3 Pro (vayu/bhima) — SM8250-AC
-## Supports: MIUI / HyperOS / Any Custom ROM
-## Compatible: KernelSU / KSU Next / Magisk / APatch / ReSukiSu / SukiSU Ultra
+# AnyKernel3 Ramdisk Mod Script
+## Infinity Kernel for POCO X3 Pro (vayu/bhima)
+## Based on AnyKernel3 by osm0sis @ xda-developers
+##
+## KernelSU Next + Infinity Optimizations (Linux 4.14)
+## Android 13-16 | HyperOS / MIUI / Custom ROM
 
-###############################################
-# AnyKernel3 Header
-###############################################
-properties() {
-    kernel_string="Infinity Kernel v1.0.17 | SM8250-AC | Proton Clang 17"
-    do.devicecheck=1
-    do.systemless=1
-    do.modules=0
-    do.sysfs=1
-    do.compatibility_check=0
-    do.cleanup=1
-    device.name[0]=vayu
-    device.name[1]=bhima
-    # is_slot_device=0 for vayu (A-only)
-    is_slot_device=0
-    supported.versions=11,12,13,14
-    supported.configs="
-        kernelsu
-        kernelsu_next
-        magisk
-        apatch
-        resukisu
-        sukisu_ultra
-    "
-}
+properties() { '
+kernel.string=Infinity Kernel for POCO X3 Pro by LawRun
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=vayu
+device.name2=bhima
+device.name3=
+device.name4=
+device.name5=
+supported.versions=13-16
+supported.patchlevels=
+supported.vendorpatchlevels=
+'; } # end properties
 
-###############################################
-# ROM Detection System
-###############################################
-detect_rom() {
-    ROM_TYPE="unknown"
-    ROM_VERSION=""
+# ================================================================
+# === Boot ramdisk file permissions                            ===
+# ================================================================
+boot_attributes() {
+set_perm_recursive 0 0 755 644 $RAMDISK/*;
+set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+} # end attributes
 
-    # Check /system/build.prop for ROM identification
-    if [ -f /system/build.prop ]; then
-        local miui_ver=$(file_getprop /system/build.prop ro.miui.ui.version.name)
-        local miui_code=$(file_getprop /system/build.prop ro.miui.ui.version.code)
-        local hyperos_ver=$(file_getprop /system/build.prop ro.os.build.version.hyper_os)
-        local rom_display=$(file_getprop /system/build.prop ro.build.display.id)
-        local build_flavor=$(file_getprop /system/build.prop ro.build.flavor)
-        local product=$(file_getprop /system/build.prop ro.build.product)
+# ================================================================
+# === Core variables (set BEFORE importing ak3-core.sh)        ===
+# ================================================================
+BLOCK=boot;
+IS_SLOT_DEVICE=1;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+NO_BLOCK_DISPLAY=1;
 
-        # MIUI detection (including V12-V15)
-        if [ -n "$miui_ver" ] || [ -n "$miui_code" ]; then
-            ROM_TYPE="miui"
-            ROM_VERSION="${miui_ver:-$miui_code}"
-            ui_print " "
-            ui_print "  *** MIUI detected: $ROM_VERSION ***"
-            return 0
-        fi
+. tools/ak3-core.sh;
 
-        # HyperOS detection
-        if [ -n "$hyperos_ver" ]; then
-            ROM_TYPE="hyperos"
-            ROM_VERSION="$hyperos_ver"
-            ui_print " "
-            ui_print "  *** HyperOS detected: $ROM_VERSION ***"
-            return 0
-        fi
+ui_print " ";
+ui_print "╔══════════════════════════════════════╗";
+ui_print "║  Infinity Kernel v1.0.48              ║";
+ui_print "║  POCO X3 Pro (vayu)  ·  Android 13-16 ║";
+ui_print "║  KernelSU Next + SuSFS v2.1.0         ║";
+ui_print "╚══════════════════════════════════════╝";
+ui_print " ";
 
-        # LineageOS / crDroid / PixelExperience / other AOSP-based
-        if contains "$build_flavor" "lineage" || contains "$rom_display" "lineage"; then
-            ROM_TYPE="lineageos"
-            ROM_VERSION="$rom_display"
-            ui_print " "
-            ui_print "  *** LineageOS detected: $ROM_VERSION ***"
-            return 0
-        fi
+ui_print "┌─ System Detection ─────────────────────";
 
-        if contains "$rom_display" "crDroid"; then
-            ROM_TYPE="crdroid"
-            ROM_VERSION="$rom_display"
-            ui_print " "
-            ui_print "  *** crDroid detected: $ROM_VERSION ***"
-            return 0
-        fi
+API=$(getprop ro.build.version.sdk 2>/dev/null);
+[ -z "$API" ] && abort "Cannot read Android API. Aborting.";
 
-        if contains "$rom_display" "PixelExperience" || contains "$build_flavor" "aosp"; then
-            ROM_TYPE="aosp"
-            ROM_VERSION="$rom_display"
-            ui_print " "
-            ui_print "  *** AOSP/Custom ROM detected: $ROM_VERSION ***"
-            return 0
-        fi
+if   [ "$API" -ge 36 ]; then
+  ANDROID_VER="Android 16"; ui_print "│  Android: 16  (API $API)";
+elif [ "$API" -ge 35 ]; then
+  ANDROID_VER="Android 15"; ui_print "│  Android: 15  (API $API)";
+elif [ "$API" -ge 34 ]; then
+  ANDROID_VER="Android 14"; ui_print "│  Android: 14  (API $API)";
+elif [ "$API" -ge 33 ]; then
+  ANDROID_VER="Android 13"; ui_print "│  Android: 13  (API $API)";
+else
+  abort "Android 12 or lower is NOT supported. Aborting.";
+fi;
 
-        # Generic AOSP check
-        if contains "$rom_display" "RP1" || contains "$rom_display" "TQ1" || \
-           contains "$rom_display" "UP1" || contains "$rom_display" "AP1" || \
-           contains "$rom_display" "VD1" || contains "$rom_display" "SP1"; then
-            ROM_TYPE="custom"
-            ROM_VERSION="$rom_display"
-            ui_print " "
-            ui_print "  *** Custom ROM detected: $ROM_VERSION ***"
-            return 0
-        fi
+TURBO_VER=$(getprop ro.mi.turboos.version.name  2>/dev/null);
+HYPER_VER=$(getprop ro.mi.os.version.name        2>/dev/null);
+MIUI_VER=$(getprop  ro.miui.version.code_time    2>/dev/null);
 
-        ROM_TYPE="custom"
-        ROM_VERSION="$rom_display"
-        ui_print " "
-        ui_print "  *** ROM detected (generic): $ROM_VERSION ***"
-    else
-        ROM_TYPE="unknown"
-        ui_print " "
-        ui_print "  ! Cannot detect ROM type (no build.prop)"
-    fi
+if   [ -n "$TURBO_VER" ]; then
+  ROM_TYPE="TurboOS"; ui_print "│  ROM:     TurboOS $TURBO_VER";
+elif [ -n "$HYPER_VER" ]; then
+  ROM_TYPE="HyperOS"; ui_print "│  ROM:     HyperOS $HYPER_VER";
+elif [ -n "$MIUI_VER" ];  then
+  ROM_TYPE="MIUI";    ui_print "│  ROM:     MIUI";
+else
+  FLAVOR=$(getprop ro.build.flavor 2>/dev/null);
+  ROM_TYPE="Custom";  ui_print "│  ROM:     Custom ($FLAVOR)";
+fi;
 
-    return 0
-}
+if   [ "$SLOT" = "_a" ]; then
+  ui_print "│  Slot:    _a  →  flashing  boot_a";
+elif [ "$SLOT" = "_b" ]; then
+  ui_print "│  Slot:    _b  →  flashing  boot_b";
+else
+  ui_print "│  Slot:    (none)";
+fi;
+ui_print "│  Block:   $BLOCK";
+ui_print "│  Ramdisk: auto-detect";
+CURRENT=$(uname -r 2>/dev/null);
+ui_print "│  Current: $CURRENT";
+ui_print "└────────────────────────────────────────";
+ui_print " ";
 
-###############################################
-# Root Manager Detection
-###############################################
-detect_root_manager() {
-    ROOT_MANAGER="none"
+ui_print "┌─ Flashing boot${SLOT} ────────────────────";
+dump_boot;
+write_boot;
+ui_print "│  Done.";
+ui_print "└────────────────────────────────────────";
 
-    # KernelSU
-    if [ -d /data/adb/ksu ] || [ -d /data/adb/kernelsu ]; then
-        ROOT_MANAGER="kernelsu"
-        ui_print "  Root: KernelSU detected"
-        return 0
-    fi
-
-    # KernelSU Next
-    if [ -d /data/adb/ksunext ]; then
-        ROOT_MANAGER="kernelsu_next"
-        ui_print "  Root: KernelSU Next detected"
-        return 0
-    fi
-
-    # Magisk
-    if [ -d /data/adb/magisk ]; then
-        ROOT_MANAGER="magisk"
-        ui_print "  Root: Magisk detected"
-        return 0
-    fi
-
-    # APatch
-    if [ -d /data/adb/ap ]; then
-        ROOT_MANAGER="apatch"
-        ui_print "  Root: APatch detected"
-        return 0
-    fi
-
-    # ReSukiSu
-    if [ -f /data/adb/resukisu/resukisu ]; then
-        ROOT_MANAGER="resukisu"
-        ui_print "  Root: ReSukiSu detected"
-        return 0
-    fi
-
-    # SukiSU Ultra
-    if [ -f /data/adb/sukisu/sukisu_ultra ] || [ -d /data/adb/sukisu ]; then
-        ROOT_MANAGER="sukisu_ultra"
-        ui_print "  Root: SukiSU Ultra detected"
-        return 0
-    fi
-
-    ui_print "  Root: No root manager detected (systemless mode)"
-}
-
-###############################################
-# Kernel install
-###############################################
-install_kernel() {
-    # Run ROM detection
-    detect_rom
-    detect_root_manager
-
-    ui_print " "
-    ui_print "  Flashing Infinity Kernel..."
-    ui_print " "
-
-    # MIUI-specific: apply kyriepatch (DSI fix)
-    if [ "$ROM_TYPE" = "miui" ]; then
-        ui_print "  Applying MIUI DSI patch..."
-        . $bin/kyriepatch.sh
-    else
-        ui_print "  Skipping MIUI DSI patch (not MIUI)"
-    fi
-
-    # Copy kernel image
-    if [ -f "$home/Image.gz-dtb" ]; then
-        ui_print "  Installing Image.gz-dtb..."
-    elif [ -f "$home/Image.gz" ]; then
-        ui_print "  Installing Image.gz..."
-    fi
-
-    # Copy DTB if present
-    if [ -f "$home/dtb.img" ]; then
-        ui_print "  Installing DTB..."
-    fi
-
-    # Copy DTBO if present
-    if [ -f "$home/dtbo.img" ]; then
-        ui_print "  Installing DTBO..."
-    fi
-
-    # For non-A/B devices (vayu), flash directly to boot
-    block=/dev/block/by-name/boot;
-
-    ui_print " "
-    ui_print "  Infinity Kernel installed successfully!"
-}
-
-###############################################
-# Post-install
-###############################################
-post_install() {
-    ui_print " "
-    ui_print "  ========================================"
-    ui_print "    Infinity Kernel v1.0.17 — Installed!"
-    ui_print "    ROM: $ROM_TYPE $ROM_VERSION"
-    ui_print "    Root: $ROOT_MANAGER"
-    ui_print "    Device: $(getprop ro.product.device)"
-    ui_print "  ========================================"
-    ui_print " "
-    ui_print "  Features:"
-    ui_print "  - CPU: Tuned SM8250-AC (balanced perf/battery)"
-    ui_print "  - GPU: Adreno 618 optimized"
-    ui_print "  - IO: FSYNC + Maple/BFQ scheduler"
-    ui_print "  - TCP: BBR congestion control"
-    ui_print "  - ZRAM: 5GB LZ4 (8GB RAM device)"
-    ui_print "  - Charging bypass: 4 gaming modes"
-    ui_print "  - Thermal: Enhanced charging regulation"
-    ui_print "  - SUFS v1.5.7+ support"
-    ui_print "  - 6 Root managers supported"
-    ui_print " "
-}
-
-###############################################
-# Main
-###############################################
-. $bin/ak3-core.sh
+ui_print " ";
+ui_print "╔══════════════════════════════════════╗";
+ui_print "║  Flash complete!                      ║";
+ui_print "╠══════════════════════════════════════╣";
+ui_print "║  ROM:     $ROM_TYPE";
+ui_print "║  Android: $ANDROID_VER";
+ui_print "║  Slot:    $SLOT  →  boot${SLOT}";
+ui_print "╠══════════════════════════════════════╣";
+ui_print "║  1. Reboot to system                  ║";
+ui_print "║  2. Install KernelSU Next app:        ║";
+ui_print "║     github.com/KernelSU-Next/KernelSU ║";
+ui_print "║  3. SuSFS activates automatically     ║";
+ui_print "╚══════════════════════════════════════╝";
+ui_print " ";
+## end boot install
