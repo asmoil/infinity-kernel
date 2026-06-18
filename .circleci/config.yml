@@ -292,24 +292,8 @@ jobs:
             # Wrap struct compat_sock_fprog in #ifdef CONFIG_COMPAT
             # Use sed: find the struct definition and add guards
             if [ -f "net/core/filter.c" ]; then
-              # Write a temp awk script to avoid Python heredoc issues
-              cat > /tmp/fix_filter.awk << 'AWKEOF'
-              BEGIN { in_struct = 0; added = 0 }
-              /struct compat_sock_fprog/ {
-                if (!added) {
-                  print "#ifdef CONFIG_COMPAT"
-                  added = 1
-                }
-                in_struct = 1
-              }
-              in_struct && /\};/ {
-                print $0
-                print "#endif /* CONFIG_COMPAT */"
-                in_struct = 0
-                next
-              }
-              { print $0 }
-AWKEOF
+              # Write awk script via echo (NO heredoc in YAML)
+              echo 'BEGIN{a=0} /struct compat_sock_fprog/{if(!a){print "#ifdef CONFIG_COMPAT";a=1}} a&&/};/{print $0;print "#endif";a=0;next} {print $0}' > /tmp/fix_filter.awk
               awk -f /tmp/fix_filter.awk net/core/filter.c > /tmp/filter.c.fixed
               mv /tmp/filter.c.fixed net/core/filter.c
               echo "  Done (filter.c)"
@@ -338,15 +322,10 @@ AWKEOF
             # On arm64: compat_timeval = { compat_long_t tv_sec, tv_usec }
             # compat_long_t = s32 on arm64. Using int is safe (same size).
             if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c; then
-              # Write guard to temp file (avoids sed escape issues)
-              cat > /tmp/compat_guard.h << 'GUARDEOF'
-#if !defined(CONFIG_COMPAT)
-struct compat_timeval {
-        int tv_sec;
-        int tv_usec;
-};
-#endif
-GUARDEOF
+              # Write guard via echo (NO heredoc in YAML)
+              echo '#if !defined(CONFIG_COMPAT)' > /tmp/compat_guard.h
+              echo 'struct compat_timeval { int tv_sec; int tv_usec; };' >> /tmp/compat_guard.h
+              echo '#endif' >> /tmp/compat_guard.h
               # Insert after last #include line
               LAST_INC=$(grep -n '^#include' net/core/sock.c | tail -1 | cut -d: -f1)
               if [ -n "$LAST_INC" ]; then
