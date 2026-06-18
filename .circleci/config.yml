@@ -349,7 +349,64 @@ jobs:
             make ARCH=arm64 olddefconfig O=out </dev/null || true
             echo "Patches applied."
 
-      # ── Step 10: Clean source tree ──────────────────────────
+      # ── Step 10: Source compatibility fixes (LineageOS sm8150) ──
+      - run:
+          name: "Source compatibility fixes (LineageOS sm8150 + Clang 23)"
+          command: |
+            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            cd "$KERNEL_SRC"
+
+            echo "=== Fix 1/4: filter.h compat_uptr_t without CONFIG_COMPAT ==="
+            if grep -q 'compat_uptr_t' include/linux/filter.h; then
+              _fix_py="/tmp/fix_filter_h.py"
+              echo 'import re' > "$_fix_py"
+              echo 'f="include/linux/filter.h"' >> "$_fix_py"
+              echo 'c=open(f).read()' >> "$_fix_py"
+              echo 'p=r"(struct compat_sock_fprog \{[^}]+\};)"' >> "$_fix_py"
+              echo 'c=re.sub(p,"#ifdef CONFIG_COMPAT\\n"+r"\1"+"\\n#endif /* CONFIG_COMPAT */",c,count=1)' >> "$_fix_py"
+              echo 'open(f,"w").write(c)' >> "$_fix_py"
+              echo 'print("  Fixed: wrapped compat_sock_fprog")' >> "$_fix_py"
+              python3 "$_fix_py"
+              rm -f "$_fix_py"
+            else
+              echo "  Skipped: compat_uptr_t not found"
+            fi
+
+            echo "=== Fix 2/4: hugetlbpage.c ptep vs pte variable name ==="
+            # Line ~235: 'ptep = huge_pmd_share(...)' but variable is
+            # declared as 'pte_t *pte'. Rename ptep to pte.
+            if grep -q 'ptep = huge_pmd_share' arch/arm64/mm/hugetlbpage.c; then
+              sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' \
+                arch/arm64/mm/hugetlbpage.c
+              echo "  Fixed: ptep -> pte in huge_pmd_share call"
+            else
+              echo "  Skipped: pattern not found"
+            fi
+
+            echo "=== Fix 3/4: huge_memory.c try_to_unmap missing 3rd arg ==="
+            # try_to_unmap() in this kernel version requires 3 args:
+            #   (page, flags, vma). Add NULL as vma.
+            if grep -q 'try_to_unmap(page, ttu_flags);' mm/huge_memory.c; then
+              sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' \
+                mm/huge_memory.c
+              echo "  Fixed: added NULL vma argument to try_to_unmap"
+            else
+              echo "  Skipped: pattern not found"
+            fi
+
+            echo "=== Fix 4/4: khugepaged.c nr_ptes removed from mm_struct ==="
+            # mm->nr_ptes was removed. mm_dec_nr_ptes() on the line above
+            # already handles the decrement. Remove the duplicate.
+            if grep -q 'atomic_long_dec(&mm->nr_ptes)' mm/khugepaged.c; then
+              sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c
+              echo "  Fixed: removed duplicate nr_ptes decrement"
+            else
+              echo "  Skipped: pattern not found"
+            fi
+
+            echo "=== All source fixes applied ==="
+
+      # ── Step 11: Clean source tree ──────────────────────────
       - run:
           name: "Clean source tree"
           command: |
@@ -359,7 +416,7 @@ jobs:
             rm -rf include/config
             echo "Source tree cleaned."
 
-      # ── Step 11: Build kernel ───────────────────────────────
+      # ── Step 12: Build kernel ───────────────────────────────
       - run:
           name: "Build Infinity Kernel (Clang 23 + KSU-Next + SuSFS)"
           no_output_timeout: 30m
@@ -481,7 +538,7 @@ jobs:
               exit 1
             fi
 
-      # ── Step 12: Package AnyKernel3 ZIP ─────────────────────
+      # ── Step 13: Package AnyKernel3 ZIP ─────────────────────
       - run:
           name: "Package AnyKernel3 ZIP"
           command: |
