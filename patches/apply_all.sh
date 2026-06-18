@@ -58,13 +58,14 @@ else
   echo "  BBR will be enabled via defconfig CONFIG_TCP_CONG_BBR"
 fi
 
-# [5/7] Root manager support — export kallsyms_lookup_name
+# [5/7] Root manager support — kallsyms_lookup_name
+# NOTE: LineageOS sm8150 already exports it. Do NOT sed-modify
+# kallsyms.c as it corrupts the EXPORT line with Clang 23.
 echo "  [5/7] Root manager support..."
-if grep -q "kallsyms_lookup_name" "$KERNEL_SRC/kernel/kallsyms.c" 2>/dev/null; then
-  safe_sed "kernel/kallsyms.c" \
-    "EXPORT_SYMBOL.*kallsyms_lookup_name" \
-    "EXPORT_SYMBOL_GPL(kallsyms_lookup_name);"
-  echo "  kallsyms_lookup_name exported"
+if grep -q "EXPORT_SYMBOL.*kallsyms_lookup_name" "$KERNEL_SRC/kernel/kallsyms.c" 2>/dev/null; then
+  echo "  kallsyms_lookup_name already exported"
+else
+  echo "  kallsyms_lookup_name not exported (may need manual fix)"
 fi
 
 # [6/7] Module signature bypass for root managers

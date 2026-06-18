@@ -214,7 +214,8 @@ jobs:
 
             DISABLE_LIST="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE \
               CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST \
-              CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND"
+              CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND \
+              CONFIG_MHI_BUS CONFIG_FAULT_INJECTION CONFIG_BLK_DEV_IO_TRACE"
 
             make ARCH=arm64 vendor/sm8150_defconfig O=out
 
@@ -405,6 +406,40 @@ jobs:
             fi
 
             echo "=== All source fixes applied ==="
+
+      # ── Step 10b: More source fixes (sock.c, kallsyms.c, task_mmu.c) ──
+      - run:
+          name: "Source fixes: compat, kallsyms, task_mmu"
+          command: |
+            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            cd "$KERNEL_SRC"
+
+            echo "=== Fix 5/7: sock.c compat_timeval without CONFIG_COMPAT ==="
+            if grep -q 'COMPAT_USE_64BIT_TIME' net/core/sock.c; then
+              echo 'aW1wb3J0IHJlCmY9Im5ldC9jb3JlL3NvY2suYyIKYz1vcGVuKGYpLnJlYWQoKQpsaW5lcyA9IGMuc3BsaXQoIlxuIikKb3V0ID0gW10KaSA9IDAKd2hpbGUgaSA8IGxlbihsaW5lcyk6CiAgICAgaWYgIkNPTVBBVF9VU0VfNjRCSVRfVElNRSIgaW4gbGluZXNbaV0gYW5kICJpbl9jb21wYXRfc3lzY2FsbCIgaW4gbGluZXNbaV06CiAgICAgICAgb3V0LmFwcGVuZCgiI2lmZGVmIENPTkZJR19DT01QQVQiKQogICAgICAgIGRlcHRoID0gMAogICAgICAgIHdoaWxlIGkgPCBsZW4obGluZXMpOgogICAgICAgICAgICBkZXB0aCArPSBsaW5lc1tpXS5jb3VudCgieyIpIC0gbGluZXNbaV0uY291bnQoIn0iKQogICAgICAgICAgICBvdXQuYXBwZW5kKGxpbmVzW2ldKQogICAgICAgICAgICBpICs9IDEKICAgICAgICAgICAgaWYgZGVwdGggPD0gMDoKICAgICAgICAgICAgICAgIGJyZWFrCiAgICAgICAgb3V0LmFwcGVuZCgiI2VuZGlmIC8qIENPTkZJR19DT01QQVQgKi8iKQogICAgZWxzZToKICAgICAgICBvdXQuYXBwZW5kKGxpbmVzW2ldKQogICAgICAgIGkgKz0gMQpyZXN1bHQgPSAiXG4iLmpvaW4ob3V0KQpyZXN1bHQgPSByZXN1bHQucmVwbGFjZSgiXHRcdHN0cnVjdCBjb21wYXRfdGltZXZhbCB0djsiLCAiI2lmZGVmIENPTkZJR19DT01QQVRcblx0XHRzdHJ1Y3QgY29tcGF0X3RpbWV2YWwgdHY7XG4jZW5kaWYiKQpvcGVuKGYsInciKS53cml0ZShyZXN1bHQpCnByaW50KCJGaXhlZDogc29jay5jIGNvbXBhdCBibG9ja3Mgd3JhcHBlZCIpCg==' | base64 -d | python3
+            else
+              echo "  Skipped: not needed"
+            fi
+
+            echo "=== Fix 6/7: kallsyms.c revert apply_all.sh damage ==="
+            # apply_all.sh may corrupt EXPORT_SYMBOL line. Restore from git.
+            git checkout -- kernel/kallsyms.c 2>/dev/null && \
+              echo "  Fixed: kallsyms.c restored" || \
+              echo "  Skipped: not in git or no change"
+
+            echo "=== Fix 7/7: task_mmu.c pmd type in reclaim_pte_range ==="
+            # The function reclaim_pte_range uses pmd_trans_unstable(pmd)
+            # and pte_offset_map_lock(mm, pmd, ...) where pmd might be
+            # evaluated incorrectly. Cast to pmd_t * explicitly.
+            if grep -q 'reclaim_pte_range' fs/proc/task_mmu.c; then
+              sed -i 's/pmd_trans_unstable(pmd)/pmd_trans_unstable((pmd_t *)pmd)/' \
+                fs/proc/task_mmu.c
+              echo "  Fixed: added pmd_t * cast in reclaim_pte_range"
+            else
+              echo "  Skipped: reclaim_pte_range not found"
+            fi
+
+            echo "=== All additional fixes applied ==="
 
       # ── Step 11: Clean source tree ──────────────────────────
       - run:
