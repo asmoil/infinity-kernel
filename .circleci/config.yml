@@ -1,7 +1,11 @@
-# Infinity Kernel v1.0.46
+# Infinity Kernel v1.0.47
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 #
+# v1.0.47 changes:
+#   - Fixed: VDSO route to aarch64-linux-gnu-gcc also needs to strip
+#     Clang-only flags like -Qunused-arguments, -fno-addrsig,
+#     -Wno-unknown-warning-option. Extended the filter list.
 # v1.0.46 changes:
 #   - Fixed VDSO assembler (6th attempt, NUCLEAR fix):
 #     Wrapper now DETECTS vdso/*.S files in args and reroutes them
@@ -424,7 +428,7 @@ jobs:
             CLANG_WRAPPER="/tmp/infinity-kernel-build/clang-aarch64"
             printf '%s\n' \
               '#!/bin/bash' \
-              '# VDSO-aware Clang wrapper for Infinity Kernel v1.0.46' \
+              '# VDSO-aware Clang wrapper for Infinity Kernel v1.0.47' \
               '_vdso=0' \
               'for _a in "$@"; do' \
               '  case "$_a" in' \
@@ -437,7 +441,7 @@ jobs:
               '  for _a in "$@"; do' \
               '    [ "$_skip" = "1" ] && { _skip=0; continue; }' \
               '    case "$_a" in' \
-              '      -no-integrated-as|--target=*|--gcc-toolchain=*) continue;;' \
+              '      -no-integrated-as|--target=*|--gcc-toolchain=*|-Qunused-arguments|-fno-addrsig|-Wno-unknown-warning-option) continue;;' \
               '      -B) _skip=1; continue;;' \
               '      -B/*) continue;;' \
               '    esac' \
@@ -579,21 +583,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.46.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.46.zip ($(du -sh /tmp/infinity-kernel-v1.0.46.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.47.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.47.zip ($(du -sh /tmp/infinity-kernel-v1.0.47.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.46.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.46.zip ($(du -sh /tmp/infinity-kernel-v1.0.46.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.47.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.47.zip ($(du -sh /tmp/infinity-kernel-v1.0.47.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.46.zip
-          destination: infinity-kernel-v1.0.46.zip
+          path: /tmp/infinity-kernel-v1.0.47.zip
+          destination: infinity-kernel-v1.0.47.zip
 
 workflows:
   infinity_build:
