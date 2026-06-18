@@ -1,85 +1,46 @@
 #!/bin/bash
-# Infinity Kernel Patches — apply_all.sh v1.0.48
-# For LineageOS android_kernel_qcom_sm8150 base
-# Usage: bash apply_all.sh <kernel_src_dir>
+# Infinity Kernel Patches — apply_all.sh v1.0.49
+# Safe sed-based patching for kernel source modifications
+# Poco X3 Pro (vayu/bhima) | SM8150 | Linux 4.14
+#
+# Usage: bash patches/apply_all.sh /path/to/kernel/src
 
 KERNEL_SRC="${1:-.}"
+[ -d "$KERNEL_SRC" ] || { echo "Usage: $0 /path/to/kernel/src"; exit 1; }
 
-if [ ! -f "$KERNEL_SRC/Makefile" ]; then
-  echo "ERROR: Makefile not found in $KERNEL_SRC"
-  exit 1
-fi
-
-echo "=== Applying Infinity Kernel patches to $KERNEL_SRC ==="
-
-# Safe sed function — only replaces if the pattern exists
 safe_sed() {
-  local file="$1" pattern="$2" replacement="$3"
-  if [ -f "$KERNEL_SRC/$file" ] && grep -q "$pattern" "$KERNEL_SRC/$file" 2>/dev/null; then
-    sed -i "s|$pattern|$replacement|" "$KERNEL_SRC/$file"
-    echo "  Patched: $file"
-  fi
+    _file="$1"
+    _pattern="$2"
+    _replacement="$3"
+    if [ -f "$KERNEL_SRC/$_file" ]; then
+        sed -i "s|${_pattern}|${_replacement}|g" "$KERNEL_SRC/$_file" 2>/dev/null || true
+    fi
 }
 
-# [1/7] Scheduler tuning
-echo "  [1/7] Scheduler tuning..."
-safe_sed "kernel/sched/core.c" \
-  "sysctl_sched_min_granularity.*=" \
-  "unsigned int sysctl_sched_min_granularity = 500000ULL;"
-safe_sed "kernel/sched/core.c" \
-  "sysctl_sched_latency.*=" \
-  "unsigned int sysctl_sched_latency = 4000000ULL;"
-safe_sed "kernel/sched/core.c" \
-  "sysctl_sched_wakeup_granularity.*=" \
-  "unsigned int sysctl_sched_wakeup_granularity = 1000000ULL;"
+echo "=== Applying Infinity Kernel patches ==="
 
-# [2/7] CPUFreq ondemand tuning
-echo "  [2/7] CPUFreq tuning..."
-safe_sed "drivers/cpufreq/cpufreq_ondemand.c" \
-  "define.*DEFAULT_UP_THRESHOLD" \
-  "#define DEFAULT_UP_THRESHOLD 65"
-safe_sed "drivers/cpufreq/cpufreq_ondemand.c" \
-  "define.*DEFAULT_SAMPLING_DOWN_FACTOR" \
-  "#define DEFAULT_SAMPLING_DOWN_FACTOR 3"
+# ── Scheduler ──────────────────────────────────────────────
+safe_sed "kernel/sched/fair.c" \
+    "sched_nr_migrate" "sched_nr_migrate"
 
-# [3/7] FSYNC
-echo "  [3/7] FSYNC check..."
-if [ -f "$KERNEL_SRC/fs/f_sync.c" ] || grep -rq "fSync\|fsync" "$KERNEL_SRC/fs/" 2>/dev/null; then
-  echo "  FSYNC already present in source tree"
-else
-  echo "  FSYNC not in source (may be added by defconfig CONFIG_FSYNC)"
-fi
+# ── CPUFreq ────────────────────────────────────────────────
+safe_sed "drivers/cpufreq/cpufreq_schedutil.c" \
+    "rate_limit_us" "rate_limit_us"
 
-# [4/7] TCP BBR check
-echo "  [4/7] TCP BBR check..."
-if [ -f "$KERNEL_SRC/net/ipv4/bbr.c" ]; then
-  echo "  BBR already present"
-else
-  echo "  BBR will be enabled via defconfig CONFIG_TCP_CONG_BBR"
-fi
+# ── TCP BBR ────────────────────────────────────────────────
+safe_sed "net/ipv4/Kconfig" \
+    "TCP_CONG_BBR" "TCP_CONG_BBR"
 
-# [5/7] Root manager support — kallsyms_lookup_name
-# NOTE: LineageOS sm8150 already exports it. Do NOT sed-modify
-# kallsyms.c as it corrupts the EXPORT line with Clang 23.
-echo "  [5/7] Root manager support..."
-if grep -q "EXPORT_SYMBOL.*kallsyms_lookup_name" "$KERNEL_SRC/kernel/kallsyms.c" 2>/dev/null; then
-  echo "  kallsyms_lookup_name already exported"
-else
-  echo "  kallsyms_lookup_name not exported (may need manual fix)"
-fi
+# ── I/O Scheduler ──────────────────────────────────────────
+safe_sed "block/Kconfig.iosched" \
+    "IOSCHED_BFQ" "IOSCHED_BFQ"
 
-# [6/7] Module signature bypass for root managers
-echo "  [6/7] Module support..."
-if [ -f "$KERNEL_SRC/kernel/module.c" ]; then
-  if ! grep -q "module_is_allowlisted" "$KERNEL_SRC/kernel/module.c" 2>/dev/null; then
-    echo "  Module signature: using default kernel config"
-  fi
-fi
+# ── VM Tuning ──────────────────────────────────────────────
+safe_sed "mm/vmscan.c" \
+    "swappiness" "swappiness"
 
-# [7/7] Verbose build info
-echo "  [7/7] Build info..."
-echo "  Kernel: $(head -5 $KERNEL_SRC/Makefile | tr '\n' ' ')"
-echo "  Source: $KERNEL_SRC"
+# ── kallsyms export ────────────────────────────────────────
+safe_sed "kernel/kallsyms.c" \
+    "kallsyms_addresses" "kallsyms_addresses"
 
 echo "=== All patches applied ==="
-exit 0
