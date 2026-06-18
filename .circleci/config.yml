@@ -1,21 +1,16 @@
-# Infinity Kernel v1.0.47
+# Infinity Kernel v1.0.48
 # Poco X3 Pro (vayu/bhima) | SM8250-AC (Snapdragon 860) | Linux 4.14
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 #
-# v1.0.47 changes:
-#   - Fixed: VDSO route to aarch64-linux-gnu-gcc also needs to strip
-#     Clang-only flags like -Qunused-arguments, -fno-addrsig,
-#     -Wno-unknown-warning-option. Extended the filter list.
-# v1.0.46 changes:
-#   - Fixed VDSO assembler (6th attempt, NUCLEAR fix):
-#     Wrapper now DETECTS vdso/*.S files in args and reroutes them
-#     to aarch64-linux-gnu-gcc (which knows its own aarch64 assembler).
-#     Clang-specific flags are stripped for VDSO compilation.
-#     All non-VDSO files still compile with Clang 23 + -B + PATH prepend.
-#   - Why previous attempts failed:
-#     v1.0.44: --gcc-toolchain=/usr — Clang still found /usr/bin/as (x86_64)
-#     v1.0.45: -B <dir> — Clang's internal toolchain detection overrides -B
-#     The ONLY reliable fix: don't let Clang touch VDSO .S files at all.
+# v1.0.48 changes:
+#   - FINAL VDSO FIX: studied LineageOS android_kernel_qcom_sm8150.
+#     They use --prefix=aarch64-linux-gnu- which makes Clang search
+#     for 'aarch64-linux-gnu-as' instead of plain 'as'. This is the
+#     standard Android kernel Clang approach. No VDSO routing hacks.
+#   - Removed: VDSO detection + GCC reroute (no longer needed).
+#   - Removed: -B <dir> + symlink (no longer needed).
+#   - Wrapper is now 1 line: --target + --prefix + --gcc-toolchain.
+#   - -no-integrated-as passes through (kernel 4.14 adds it for Clang).
 #   - Toolchain: Clang 23 via official LLVM apt repository (apt.llvm.org).
 #   - SuSFS v2.1.0 (from susfs4ksu for Linux 4.14).
 #   - KernelSU-Next v3.2.0 (latest, matches Alymore Project).
@@ -48,9 +43,6 @@ jobs:
               python-is-python3 ca-certificates lsb-release wget
 
             # ── LLVM/Clang 23 из официального репозитория ──────
-            # https://apt.llvm.org/ — официальный LLVM apt-репозиторий.
-            # Устанавливает /usr/lib/llvm-23/bin/clang + все LLVM tools.
-            # В Clang 23 'clang' — РЕАЛЬНЫЙ бинарник (не symlink).
             wget -qO- https://apt.llvm.org/llvm.sh | bash -s 23
 
             # Проверка
@@ -63,7 +55,7 @@ jobs:
             echo "aarch64:   $(which aarch64-linux-gnu-gcc)"
             echo "arm:       $(which arm-linux-gnueabi-gcc)"
 
-            # Versioned symlinks для VDSO Makefile (безопасно — clang реальный бинарник)
+            # Versioned symlinks для VDSO Makefile
             for v in 13 14 15 16 17 18 19 20 21 22 23; do
               ln -sf /usr/lib/llvm-23/bin/clang /usr/bin/clang-$v 2>/dev/null || true
             done
@@ -163,7 +155,6 @@ jobs:
             else
               echo "Загрузка SuSFS v2.1.0 патча для Linux 4.14..."
 
-              # Ищем патч в репозиториях susfs4ksu
               PATCH_FOUND=0
               for repo_url in \
                 "https://github.com/AnymoreProject/susfs4ksu" \
@@ -174,7 +165,6 @@ jobs:
                      --config "credential.helper=" \
                      "$repo_url" "$tmp_repo/repo" 2>/dev/null; then
 
-                  # Ищем патч для 4.14
                   PATCH_FILE=$(find "$tmp_repo/repo" -name "*4.14*.patch" 2>/dev/null | sort | head -1)
 
                   if [ -n "$PATCH_FILE" ] && [ -f "$PATCH_FILE" ]; then
@@ -182,7 +172,6 @@ jobs:
                     if grep -q "susfs" "$PATCH_FILE" 2>/dev/null; then
                       echo "Применяем патч..."
                       patch -p1 --forward < "$PATCH_FILE" || {
-                        # Если патч частично применён — это ОК
                         patch -p1 --dry-run --forward < "$PATCH_FILE" 2>&1 | grep -q "Reversed" && \
                           echo "Патч уже частично применён — продолжаем"
                       }
@@ -234,28 +223,19 @@ jobs:
             KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
             cd "$KERNEL_SRC"
 
-            # ═══════════════════════════════════════════════════════
-            # PROTECTED_CFGS — конфиги, которые НИКОГДА нельзя отключать
-            # ═══════════════════════════════════════════════════════
             PROTECTED_CFGS="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
 
             DISABLE_LIST="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE \
               CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST \
               CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND"
 
-            # ── 1) Base defconfig ──
             make ARCH=arm64 vayu_user_defconfig O=out
 
-            # ── 2) Merge infinity_defconfig fragment ──
             scripts/kconfig/merge_config.sh -O out/ out/.config \
               arch/arm64/configs/infinity_defconfig || true
 
-            # ── 3) First olddefconfig ──
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
-            # ═══════════════════════════════════════════════════════
-            # Тройной проход отключения (triple disable pass)
-            # ═══════════════════════════════════════════════════════
             disable_cfgs() {
               for cfg in $DISABLE_LIST; do
                 local skip=0
@@ -295,9 +275,6 @@ jobs:
             done
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
-            # ═══════════════════════════════════════════════════════
-            # HIDDEN_CFGS
-            # ═══════════════════════════════════════════════════════
             HIDDEN_CFGS="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
 
             echo "  [4/6] Compiling scripts (generates auto.conf)..."
@@ -408,50 +385,19 @@ jobs:
             CLANG_DIR="/usr/lib/llvm-23/bin"
             export PATH="$CLANG_DIR:$PATH"
 
-            # ── Cross-bin directory: as -> aarch64-linux-gnu-as ────
-            # Belt-and-suspenders for non-VDSO Clang compilation.
-            CROSS_BIN="/tmp/infinity-kernel-build/cross-bin"
-            mkdir -p "$CROSS_BIN"
-            ln -sf /usr/bin/aarch64-linux-gnu-as "$CROSS_BIN/as"
-
             # ═══════════════════════════════════════════════════════
-            # Clang cross-compiler wrapper (VDSO-aware)
+            # Clang cross-compiler wrapper
             # ═══════════════════════════════════════════════════════
-            # PROBLEM: Clang 23 with -no-integrated-as can't find
-            #   aarch64-linux-gnu-as. It finds /usr/bin/as (x86_64).
-            #   -B, --gcc-toolchain, CLANG_TRIPLE — all IGNORED by
-            #   Clang's assembler lookup in kernel 4.14 VDSO build.
-            # FIX: Wrapper detects vdso/*.S files and reroutes them
-            #   to aarch64-linux-gnu-gcc which natively uses the
-            #   correct aarch64 assembler. Clang-only flags stripped.
+            # Based on LineageOS android_kernel_qcom_sm8150 approach:
+            #   --target=aarch64-linux-gnu  : target triple
+            #   --prefix=aarch64-linux-gnu- : Clang prepends this to
+            #     tool names → finds 'aarch64-linux-gnu-as' (not 'as')
+            #     when -no-integrated-as is used. THIS is the key fix.
+            #   --gcc-toolchain=/usr         : cross headers/libs
+            #   $@ : all args pass through (including -no-integrated-as)
             # ═══════════════════════════════════════════════════════
             CLANG_WRAPPER="/tmp/infinity-kernel-build/clang-aarch64"
-            printf '%s\n' \
-              '#!/bin/bash' \
-              '# VDSO-aware Clang wrapper for Infinity Kernel v1.0.47' \
-              '_vdso=0' \
-              'for _a in "$@"; do' \
-              '  case "$_a" in' \
-              '    */vdso/*.S) _vdso=1; break;;' \
-              '  esac' \
-              'done' \
-              'if [ "$_vdso" = "1" ]; then' \
-              '  _args=()' \
-              '  _skip=0' \
-              '  for _a in "$@"; do' \
-              '    [ "$_skip" = "1" ] && { _skip=0; continue; }' \
-              '    case "$_a" in' \
-              '      -no-integrated-as|--target=*|--gcc-toolchain=*|-Qunused-arguments|-fno-addrsig|-Wno-unknown-warning-option) continue;;' \
-              '      -B) _skip=1; continue;;' \
-              '      -B/*) continue;;' \
-              '    esac' \
-              '    _args+=("$_a")' \
-              '  done' \
-              '  exec aarch64-linux-gnu-gcc "${_args[@]}"' \
-              'fi' \
-              'export PATH="/tmp/infinity-kernel-build/cross-bin:$PATH"' \
-              'exec /usr/lib/llvm-23/bin/clang --target=aarch64-linux-gnu --gcc-toolchain=/usr -B /tmp/infinity-kernel-build/cross-bin "$@"' \
-              > "$CLANG_WRAPPER"
+            printf '#!/bin/bash\nexec /usr/lib/llvm-23/bin/clang --target=aarch64-linux-gnu --prefix=aarch64-linux-gnu- --gcc-toolchain=/usr "$@"\n' > "$CLANG_WRAPPER"
             chmod +x "$CLANG_WRAPPER"
 
             # ── Diagnostics ──────────────────────────────────────
@@ -459,24 +405,21 @@ jobs:
             echo "clang:      $(which clang) -> $(clang --version 2>&1 | head -1)"
             echo "wrapper:    $CLANG_WRAPPER"
             echo "as (PATH):  $(which as)"
-            echo "as (cross): $(ls -la $CROSS_BIN/as)"
-            echo "aarch64-as: $(which aarch64-linux-gnu-as 2>/dev/null || echo 'not found')"
+            echo "aarch64-as: $(which aarch64-linux-gnu-as)"
             echo "cross-gcc:  $(which aarch64-linux-gnu-gcc)"
             echo "ld.lld:     $(which ld.lld)"
             echo ""
             echo "=== Wrapper content ==="
             cat "$CLANG_WRAPPER"
             echo ""
-            echo "=== Wrapper test (VDSO detection) ==="
-            echo "Testing VDSO route:"
-            "$CLANG_WRAPPER" -c -o /dev/null ../arch/arm64/kernel/vdso/gettimeofday.S -D__ASSEMBLY__ 2>&1 | head -5 || echo "(expected — file may not exist yet)"
-            echo "Testing Clang route (non-VDSO):"
-            echo 'int x;' | "$CLANG_WRAPPER" -x c -c -o /dev/null - 2>&1 | head -3 || true
+            echo "=== Clang assembler lookup test ==="
+            "$CLANG_WRAPPER" -no-integrated-as -x assembler -c -o /dev/null - <<< '.text
+.global _start
+_start:
+nop' 2>&1 | head -5 || true
             echo "==============================="
 
             # ── Make flags ───────────────────────────────────────
-            # CC points to wrapper (single path, no space issues).
-            # HOSTCC=gcc uses host tools untouched.
             COMMON_MAKE="O=out \
               ARCH=arm64 \
               CC=$CLANG_WRAPPER \
@@ -583,21 +526,21 @@ jobs:
             if [ -d "AnyKernel3" ]; then
               cp -v "$IMG" AnyKernel3/
               cd AnyKernel3
-              zip -r9 /tmp/infinity-kernel-v1.0.47.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.47.zip ($(du -sh /tmp/infinity-kernel-v1.0.47.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.48.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.48.zip ($(du -sh /tmp/infinity-kernel-v1.0.48.zip | cut -f1))"
             elif [ -n "${SRC_ROOT:-}" ] && [ -d "$SRC_ROOT/AnyKernel3" ]; then
               cp -v "$IMG" "$SRC_ROOT/AnyKernel3/"
               cd "$SRC_ROOT/AnyKernel3"
-              zip -r9 /tmp/infinity-kernel-v1.0.47.zip *
-              echo "ZIP: /tmp/infinity-kernel-v1.0.47.zip ($(du -sh /tmp/infinity-kernel-v1.0.47.zip | cut -f1))"
+              zip -r9 /tmp/infinity-kernel-v1.0.48.zip *
+              echo "ZIP: /tmp/infinity-kernel-v1.0.48.zip ($(du -sh /tmp/infinity-kernel-v1.0.48.zip | cut -f1))"
             else
               echo "ОШИБКА: AnyKernel3 директория не найдена"
               exit 1
             fi
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.47.zip
-          destination: infinity-kernel-v1.0.47.zip
+          path: /tmp/infinity-kernel-v1.0.48.zip
+          destination: infinity-kernel-v1.0.48.zip
 
 workflows:
   infinity_build:
