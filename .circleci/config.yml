@@ -65,17 +65,24 @@ jobs:
             if [ -f ".susfs_v210" ]; then echo "SuSFS already applied"; exit 0; fi
             for REPO in "https://github.com/AnymoreProject/susfs4ksu" "https://github.com/sidex15/susfs4ksu"; do
               TMPD=$(mktemp -d)
-              if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --config "credential.helper=" "$REPO" "$TMPD/r" 2>/dev/null; then
+              if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --config "credential.helper=" "$REPO" "$TMPD/r" 2>&1; then
                 PF=$(find "$TMPD/r" -name "*4.14*.patch" 2>/dev/null | sort | head -1)
                 if [ -n "$PF" ] && grep -q "susfs" "$PF" 2>/dev/null; then
                   patch -p1 --forward < "$PF" 2>/dev/null || true
                   touch .susfs_v210
                   echo "SuSFS applied from $REPO"
+                else
+                  echo "WARNING: no 4.14 susfs patch found in $REPO"
                 fi
+              else
+                echo "WARNING: could not clone $REPO"
               fi
               rm -rf "$TMPD"
-              [ -f .susfs_v210 ] && break
+              if [ -f .susfs_v210 ]; then break; fi
             done
+            if [ ! -f .susfs_v210 ]; then
+              echo "WARNING: SuSFS not applied (no usable patch found in any repo)"
+            fi
 
       # ── Step 5: Copy infinity files ──────────────────────────
       - run:
