@@ -1,4 +1,4 @@
-# Infinity Kernel v1.0.50
+# Infinity Kernel v1.0.51
 # Poco X3 Pro (vayu/bhima) | SM8150 (LineageOS base) | Linux 4.14.357
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 version: 2.1
@@ -19,22 +19,25 @@ jobs:
             wget -qO- https://apt.llvm.org/llvm.sh | bash -s 23
             echo "Clang 23: $(/usr/lib/llvm-23/bin/clang --version 2>&1 | head -1)"
 
-      # ── Step 2: Clone LineageOS kernel source ───────────────
+      # ── Step 2: Get kernel source (local or clone) ───────
       - run:
-          name: "Clone LineageOS android_kernel_qcom_sm8150"
+          name: "Get kernel source (local or clone)"
           command: |
-            mkdir -p /tmp/infinity-kernel-build
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
-            if [ ! -d "$KERNEL_SRC/.git" ]; then
+            KERNEL_SRC="kernel_scr"
+            if [ -d "$KERNEL_SRC/arch/arm64" ]; then
+              echo "Using local kernel_scr"
+            else
+              echo "kernel_scr not found, cloning LineageOS..."
               git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150 "$KERNEL_SRC"
             fi
-            echo "Cloned to $KERNEL_SRC"
+            echo "KERNEL_SRC=$KERNEL_SRC"
+            ls "$KERNEL_SRC/arch/arm64/configs/" | head -5
 
       # ── Step 3: KernelSU-Next v3.2.0 ────────────────────────
       - run:
           name: "KernelSU-Next v3.2.0"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             if [ -d "KernelSU/kernel" ]; then
               echo "KernelSU already present"
@@ -60,7 +63,7 @@ jobs:
       - run:
           name: "SuSFS v2.1.0"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             if [ -f ".susfs_v210" ]; then echo "SuSFS already applied"; exit 0; fi
             for REPO in "https://github.com/AnymoreProject/susfs4ksu" "https://github.com/sidex15/susfs4ksu"; do
@@ -81,8 +84,9 @@ jobs:
       - run:
           name: "Copy infinity kernel files"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             cp -rv arch/arm64/configs/infinity_defconfig "$KERNEL_SRC/arch/arm64/configs/infinity_defconfig"
+            cp -rv include/linux/infinity_charging_control.h "$KERNEL_SRC/include/linux/infinity_charging_control.h"
             cp -rv drivers/charging "$KERNEL_SRC/drivers/charging"
             grep -q 'source "drivers/charging/Kconfig"' "$KERNEL_SRC/drivers/Kconfig" 2>/dev/null || echo 'source "drivers/charging/Kconfig"' >> "$KERNEL_SRC/drivers/Kconfig"
             grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' "$KERNEL_SRC/drivers/Makefile" 2>/dev/null || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> "$KERNEL_SRC/drivers/Makefile"
@@ -93,10 +97,10 @@ jobs:
       - run:
           name: "Config (sm8150_defconfig + merge + disable + HIDDEN)"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             PROTECTED="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
-            DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND"
+            DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_QCOM"
             make ARCH=arm64 vendor/sm8150_defconfig O=out
             scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/infinity_defconfig || true
             make ARCH=arm64 olddefconfig O=out </dev/null || true
@@ -137,7 +141,7 @@ jobs:
       - run:
           name: "OpenSSL 3.0 patches"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             [ -f "$KERNEL_SRC/certs/extract-cert.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/certs/extract-cert.c"
             [ -f "$KERNEL_SRC/scripts/sign-file.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/scripts/sign-file.c"
             echo "OpenSSL patched"
@@ -146,7 +150,7 @@ jobs:
       - run:
           name: "Apply patches + SuSFS config"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             [ -f patches/apply_all.sh ] && bash patches/apply_all.sh .
             grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
@@ -156,7 +160,7 @@ jobs:
       - run:
           name: "Source compat fixes (7 fixes)"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             echo "=== Fix 1/7: filter.h compat_uptr_t ==="
             if [ -f "include/linux/filter.h" ]; then
@@ -171,10 +175,13 @@ jobs:
             [ -f "mm/huge_memory.c" ] && { sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c; echo "  Done"; }
             echo "=== Fix 4/7: khugepaged.c nr_ptes ==="
             [ -f "mm/khugepaged.c" ] && { sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c; echo "  Done"; }
-            echo "=== Fix 5/7: sock.c compat_timeval ==="
+            echo "=== Fix 5/7: sock.c compat_timeval + COMPAT_USE_64BIT_TIME ==="
             if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c; then
-              echo '#if !defined(CONFIG_COMPAT)' > /tmp/cg.h
-              echo 'struct compat_timeval { int tv_sec; int tv_usec; };' >> /tmp/cg.h
+              echo '#include <linux/compat.h>' > /tmp/cg.h
+              echo '#if !defined(CONFIG_COMPAT)' >> /tmp/cg.h
+              echo '#define COMPAT_USE_64BIT_TIME 0' >> /tmp/cg.h
+              echo 'typedef s32 compat_long_t;' >> /tmp/cg.h
+              echo 'struct compat_timeval { compat_long_t tv_sec; compat_long_t tv_usec; };' >> /tmp/cg.h
               echo '#endif' >> /tmp/cg.h
               LI=$(grep -n '^#include' net/core/sock.c | tail -1 | cut -d: -f1)
               [ -n "$LI" ] && sed -i "${LI}r /tmp/cg.h" net/core/sock.c
@@ -193,13 +200,33 @@ jobs:
               echo '#endif' >> fs/compat.c
               echo "  Done"
             fi
-            echo "=== All 7 fixes applied ==="
+            echo "=== Fix 8: task_mmu.c pmd_t pointer ==="
+            if [ -f "fs/proc/task_mmu.c" ]; then
+              sed -i 's/pmd_t \*pmd = (pmd_t \*)pmd_val/pmd_t pmd = __pmd(/g' fs/proc/task_mmu.c 2>/dev/null || true
+              echo "  Done"
+            fi
+            echo "=== Fix 9: blktrace.c kernfs_node_id ==="
+            if [ -f "kernel/trace/blktrace.c" ]; then
+              sed -i 's/union kernfs_node_id \*id/u64 id/g' kernel/trace/blktrace.c 2>/dev/null || true
+              echo "  Done"
+            fi
+            echo "=== Fix 10: fault-inject.c expected expression ==="
+            if [ -f "lib/fault-inject.c" ]; then
+              sed -i 's/should_fail_ex(__get_free_pages/should_fail_ex(__get_free_pages,/' lib/fault-inject.c 2>/dev/null || true
+              echo "  Done"
+            fi
+            echo "=== Fix 11: trace_event_perf.c redefinition ==="
+            if [ -f "kernel/trace/trace_event_perf.c" ]; then
+              sed -i 's/u64 event/u64 tp_event/' kernel/trace/trace_event_perf.c 2>/dev/null || true
+              echo "  Done"
+            fi
+            echo "=== All fixes applied ==="
 
       # ── Step 10: Clean source tree ───────────────────────────
       - run:
           name: "Clean source tree"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             rm -f .config
             rm -rf include/config
@@ -209,7 +236,7 @@ jobs:
           name: "Build Infinity Kernel"
           no_output_timeout: 30m
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             CLANG_DIR="/usr/lib/llvm-23/bin"
             cd "$KERNEL_SRC"
             make ARCH=arm64 O=out olddefconfig </dev/null 2>&1 || true
@@ -235,7 +262,7 @@ jobs:
       - run:
           name: "Package AnyKernel3 ZIP"
           command: |
-            KERNEL_SRC="/tmp/infinity-kernel-build/kernel_src"
+            KERNEL_SRC="kernel_scr"
             IMG="$KERNEL_SRC/out/arch/arm64/boot/Image.gz-dtb"
             [ ! -f "$IMG" ] && { echo "ERROR: Image.gz-dtb not found"; ls -la "$KERNEL_SRC/out/arch/arm64/boot/" 2>/dev/null; exit 1; }
             echo "Image: $(du -sh "$IMG" | cut -f1)"
