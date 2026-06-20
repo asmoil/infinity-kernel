@@ -1,11 +1,13 @@
-# Infinity Charging Control - Kconfig
-# Poco X3 Pro (vayu/bhima) | SM8150
-
+#
+# Infinity Charging Control Driver
+# SM8150 (Poco X3 Pro vayu/bhima)
+#
 config CHARGING_CONTROL
-    tristate "Infinity Charging Control (Gaming Bypass)"
-    depends on POWER_SUPPLY && THERMAL
-    default y
+    tristate "Infinity Charging Control"
+    depends on ARCH_QCOM && POWER_SUPPLY
+    default n
     help
-      Infinity Kernel charging bypass control for gaming.
-      Provides 5 modes via sysfs: bypass, normal, 80%, 90%, custom.
-      Also accessible via IOCTL through /dev/infinity_charging_control.
+      Custom charging control driver for Poco X3 Pro (vayu/bhima).
+      Provides 5 charging modes: OFF, ON, PAUSE, LIMIT, BYPASS.
+      Controlled via sysfs and IOCTL interface.
+      Say Y if you want custom charging control.

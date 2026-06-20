@@ -1,120 +1,26 @@
-### AnyKernel3 Ramdisk Mod Script
-## Infinity Kernel v1.0.49 for POCO X3 Pro (vayu/bhima)
-## Based on AnyKernel3 by osm0sis @ xda-developers
-##
-## KernelSU Next v3.2.0 + SuSFS v2.1.0
-## Android 13-16 | HyperOS / TurboOS / MIUI / Custom ROM
+# AnyKernel3 flasher for Infinity Kernel
+# Target: Poco X3 Pro (vayu/bhima)
 
-# ================================================================
-# === AnyKernel properties (checked BEFORE any shell runs)     ===
-# ================================================================
-properties() { '
-kernel.string=Infinity Kernel v1.0.49 for POCO X3 Pro
+kernel.string=Infinity Kernel by asmoil
 do.devicecheck=1
-do.modules=0
 do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=vayu
-device.name2=bhima
-device.name3=
-device.name4=
-device.name5=
-supported.versions=13-16
-supported.patchlevels=
-supported.vendorpatchlevels=
-'; } # end properties
 
-# ================================================================
-# === Boot ramdisk file permissions                            ===
-# ================================================================
-boot_attributes() {
-set_perm_recursive 0 0 755 644 $RAMDISK/*;
-set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
-} # end attributes
+# ── Device check ────────────────────────────────────
+supported.versions=13
+supported.patchlevels=2023-01 2023-02 2023-03 2023-04 2023-05 2023-06 2023-07 2023-08 2023-09 2023-10 2023-11 2023-12 2024-01 2024-02 2024-03 2024-04 2024-05 2024-06 2024-07 2024-08 2024-09 2024-10 2024-11 2024-12 2025-01 2025-02 2025-03 2025-04 2025-05 2025-06
 
-# ================================================================
-# === Core variables (set BEFORE importing ak3-core.sh)        ===
-# ================================================================
-BLOCK=boot;
-IS_SLOT_DEVICE=1;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
-NO_BLOCK_DISPLAY=1;
+# ── Slot device (A/B partition) ─────────────────────
+is_slot_device=1
+slot_select=1
+no_emui_warning=1
+no_verity_warning=1
+patch_vbmeta_flag=1
 
-# ================================================================
-# === Import AnyKernel3 core                                    ===
-# ================================================================
-. tools/ak3-core.sh;
+# ── Flash ─────────────────────────────────────────
+flashbootimg=1
 
-# ================================================================
-# === BANNER                                                   ===
-# ================================================================
-ui_print " ";
-ui_print "========================================";
-ui_print "  Infinity Kernel v1.0.49";
-ui_print "  POCO X3 Pro (vayu/bhima)";
-ui_print "  SM8150 | Clang 23 | Linux 4.14";
-ui_print "  KernelSU-Next + SuSFS";
-ui_print "========================================";
-ui_print " ";
+# ── Kernel image ───────────────────────────────────
+backup_file=boot.img
 
-# ================================================================
-# === AUTO-DETECTION                                           ===
-# ================================================================
-ui_print "--- System Detection ---";
-
-API=$(getprop ro.build.version.sdk 2>/dev/null);
-[ -z "$API" ] && abort "Cannot read Android API. Aborting.";
-
-if   [ "$API" -ge 36 ]; then
-  ANDROID_VER="Android 16"; ui_print "  Android: 16  (API $API)";
-elif [ "$API" -ge 35 ]; then
-  ANDROID_VER="Android 15"; ui_print "  Android: 15  (API $API)";
-elif [ "$API" -ge 34 ]; then
-  ANDROID_VER="Android 14"; ui_print "  Android: 14  (API $API)";
-elif [ "$API" -ge 33 ]; then
-  ANDROID_VER="Android 13"; ui_print "  Android: 13  (API $API)";
-else
-  abort "Android 12 or lower is NOT supported. Aborting.";
-fi;
-
-TURBO_VER=$(getprop ro.mi.turboos.version.name  2>/dev/null);
-HYPER_VER=$(getprop ro.mi.os.version.name        2>/dev/null);
-MIUI_VER=$(getprop  ro.miui.version.code_time    2>/dev/null);
-
-if   [ -n "$TURBO_VER" ]; then
-  ROM_TYPE="TurboOS"; ui_print "  ROM:     TurboOS $TURBO_VER";
-elif [ -n "$HYPER_VER" ]; then
-  ROM_TYPE="HyperOS"; ui_print "  ROM:     HyperOS $HYPER_VER";
-elif [ -n "$MIUI_VER" ];  then
-  ROM_TYPE="MIUI";    ui_print "  ROM:     MIUI";
-else
-  FLAVOR=$(getprop ro.build.flavor 2>/dev/null);
-  ROM_TYPE="Custom";  ui_print "  ROM:     Custom ($FLAVOR)";
-fi;
-
-if   [ "$SLOT" = "_a" ]; then
-  ui_print "  Slot:    _a  ->  boot_a";
-elif [ "$SLOT" = "_b" ]; then
-  ui_print "  Slot:    _b  ->  boot_b";
-else
-  ui_print "  Slot:    (none - A-only device)";
-fi;
-ui_print "  Block:   $BLOCK";
-
-ui_print " ";
-ui_print "--- Flashing boot${SLOT} ---";
-
-dump_boot;
-write_boot;
-
-ui_print " ";
-ui_print "========================================";
-ui_print "  Flash complete!";
-ui_print "  ROM: $ROM_TYPE | $ANDROID_VER";
-ui_print "  Slot: $SLOT -> boot${SLOT}";
-ui_print "  KernelSU-Next + SuSFS active";
-ui_print "========================================";
-ui_print " ";
-## end boot install
+# ── Init script ────────────────────────────────────
+init_post_flash.tools/infinity_init.sh

@@ -1,24 +1,36 @@
 # Infinity Kernel
+# Build artifacts, defconfig, ROM downloads
+*.zip
+*.tar.gz
+*.tar.xz
+*.img
+*out/
 *.o
 *.ko
 *.mod
 *.mod.c
+*.order
+*.symvers
 *.cmd
 .tmp_versions/
-modules.order
+modules.builtin
 Module.symvers
-*.img
-*.dtb
-*.dtbo
-out/
-.config
-.config.old
-include/config/
-arch/arm64/boot/Image.gz-dtb
-.cache/
-.clang-tidy
+
+# IDE
+.vscode/
+.idea/
 *.swp
 *.swo
 *~
-.ccache/
-*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Clang / toolchain
+*clang*
+*llvm*
+toolchain/
+
+# KernelSU internal (clone at CI time)
+kernel_scr/KernelSU/

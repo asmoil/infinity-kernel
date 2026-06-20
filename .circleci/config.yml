@@ -1,12 +1,13 @@
-# Infinity Kernel v1.0.51
+# Infinity Kernel v1.0.53
 # Poco X3 Pro (vayu/bhima) | SM8150 (LineageOS base) | Linux 4.14.357
 # LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
 version: 2.1
 
 jobs:
   build:
+    working_directory: ~/project
     docker:
-      - image: ubuntu:22.04
+      - image: cimg/base:stable
     steps:
       - checkout
 
@@ -14,9 +15,9 @@ jobs:
       - run:
           name: "Install dependencies + LLVM/Clang 23"
           command: |
-            apt-get update
-            apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget
-            wget -qO- https://apt.llvm.org/llvm.sh | bash -s 23
+            sudo apt-get update
+            sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python3 ca-certificates lsb-release wget
+            wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s 23
             echo "Clang 23: $(/usr/lib/llvm-23/bin/clang --version 2>&1 | head -1)"
 
       # ── Step 2: Get kernel source (local or clone) ───────
@@ -156,26 +157,26 @@ jobs:
             grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
-      # ── Step 9: Source compat fixes (7 fixes, sed/awk only) ──
+      # ── Step 9: Source compat fixes (11 fixes, sed/awk only) ──
       - run:
-          name: "Source compat fixes (7 fixes)"
+          name: "Source compat fixes (11 fixes)"
           command: |
             KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
-            echo "=== Fix 1/7: filter.h compat_uptr_t ==="
+            echo "=== Fix 1/11: filter.h compat_uptr_t ==="
             if [ -f "include/linux/filter.h" ]; then
               echo 'BEGIN{a=0} /struct compat_sock_fprog/{if(!a){print "#ifdef CONFIG_COMPAT";a=1}} a&&/};/{print $0;print "#endif";a=0;next} {print $0}' > /tmp/fix_filter.awk
               awk -f /tmp/fix_filter.awk include/linux/filter.h > /tmp/filter.h.fixed
               mv /tmp/filter.h.fixed include/linux/filter.h
               echo "  Done"
             fi
-            echo "=== Fix 2/7: hugetlbpage.c ptep ==="
+            echo "=== Fix 2/11: hugetlbpage.c ptep ==="
             [ -f "mm/hugetlbpage.c" ] && { sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c; echo "  Done"; }
-            echo "=== Fix 3/7: huge_memory.c try_to_unmap ==="
+            echo "=== Fix 3/11: huge_memory.c try_to_unmap ==="
             [ -f "mm/huge_memory.c" ] && { sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c; echo "  Done"; }
-            echo "=== Fix 4/7: khugepaged.c nr_ptes ==="
+            echo "=== Fix 4/11: khugepaged.c nr_ptes ==="
             [ -f "mm/khugepaged.c" ] && { sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c; echo "  Done"; }
-            echo "=== Fix 5/7: sock.c compat_timeval + COMPAT_USE_64BIT_TIME ==="
+            echo "=== Fix 5/11: sock.c compat_timeval ==="
             if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c; then
               echo '#include <linux/compat.h>' > /tmp/cg.h
               echo '#if !defined(CONFIG_COMPAT)' >> /tmp/cg.h
@@ -188,39 +189,39 @@ jobs:
               rm -f /tmp/cg.h
               echo "  Done"
             fi
-            echo "=== Fix 6/7: net/compat.c ==="
+            echo "=== Fix 6/11: net/compat.c ==="
             if [ -f "net/compat.c" ] && ! grep -q 'CONFIG_COMPAT' net/compat.c; then
               echo '#ifdef CONFIG_COMPAT' | cat - net/compat.c > /tmp/cc.tmp && mv /tmp/cc.tmp net/compat.c
               echo '#endif' >> net/compat.c
               echo "  Done"
             fi
-            echo "=== Fix 7/7: fs/compat.c ==="
+            echo "=== Fix 7/11: fs/compat.c ==="
             if [ -f "fs/compat.c" ] && ! grep -q 'CONFIG_COMPAT' fs/compat.c; then
               echo '#ifdef CONFIG_COMPAT' | cat - fs/compat.c > /tmp/fc.tmp && mv /tmp/fc.tmp fs/compat.c
               echo '#endif' >> fs/compat.c
               echo "  Done"
             fi
-            echo "=== Fix 8: task_mmu.c pmd_t pointer ==="
+            echo "=== Fix 8/11: task_mmu.c pmd_t ==="
             if [ -f "fs/proc/task_mmu.c" ]; then
               sed -i 's/pmd_t \*pmd = (pmd_t \*)pmd_val/pmd_t pmd = __pmd(/g' fs/proc/task_mmu.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== Fix 9: blktrace.c kernfs_node_id ==="
+            echo "=== Fix 9/11: blktrace.c kernfs_node_id ==="
             if [ -f "kernel/trace/blktrace.c" ]; then
               sed -i 's/union kernfs_node_id \*id/u64 id/g' kernel/trace/blktrace.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== Fix 10: fault-inject.c expected expression ==="
+            echo "=== Fix 10/11: fault-inject.c ==="
             if [ -f "lib/fault-inject.c" ]; then
               sed -i 's/should_fail_ex(__get_free_pages/should_fail_ex(__get_free_pages,/' lib/fault-inject.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== Fix 11: trace_event_perf.c redefinition ==="
+            echo "=== Fix 11/11: trace_event_perf.c ==="
             if [ -f "kernel/trace/trace_event_perf.c" ]; then
               sed -i 's/u64 event/u64 tp_event/' kernel/trace/trace_event_perf.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== All fixes applied ==="
+            echo "=== All 11 fixes applied ==="
 
       # ── Step 10: Clean source tree ───────────────────────────
       - run:
@@ -268,11 +269,11 @@ jobs:
             echo "Image: $(du -sh "$IMG" | cut -f1)"
             cp -v "$IMG" AnyKernel3/
             cd AnyKernel3
-            zip -r9 /tmp/infinity-kernel-v1.0.50.zip *
+            zip -r9 /tmp/infinity-kernel-v1.0.53.zip *
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.50.zip
-          destination: infinity-kernel-v1.0.50.zip
+          path: /tmp/infinity-kernel-v1.0.53.zip
+          destination: infinity-kernel-v1.0.53.zip
 
 workflows:
   infinity_build:

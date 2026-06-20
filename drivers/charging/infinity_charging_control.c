@@ -1,13 +1,11 @@
 /*
- * Infinity Charging Control Driver v1.0.49
- * SM8150 (Snapdragon 855) — Poco X3 Pro (vayu/bhima)
+ * Infinity Charging Control Driver
+ * Copyright (c) 2024 Infinity Kernel Team
+ * SPDX-License-Identifier: MIT
  *
- * Provides 5 charging modes via /sys/class/power_supply/battery/:
- *   0 = Bypass (stop charging, run on battery)
- *   1 = Normal (default, charge to 100%)
- *   2 = Limit to 80%
- *   3 = Limit to 90%
- *   4 = Custom threshold
+ * SM8150 charging control for Poco X3 Pro (vayu/bhima)
+ * Sysfs: /sys/class/power_supply/battery/charge_ctrl_*
+ * IOCTL: /dev/infinity_charger
  */
 
 #include <linux/module.h>
@@ -16,297 +14,296 @@
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
-#include <linux/uaccess.h>
-#include <linux/slab.h>
-#include <linux/delay.h>
 #include <linux/power_supply.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
-#include <linux/io.h>
-#include <linux/interrupt.h>
 #include <linux/workqueue.h>
-#include <linux/mutex.h>
-#include <linux/errno.h>
-#include <linux/thermal.h>
-
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/ioctl.h>
+#include <linux/delay.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/infinity_charging_control.h>
 
-#define DRIVER_NAME "infinity_charging_control"
-#define CLASS_NAME  "infinity_charging"
-#define DEVICE_NAME "charging_control"
+#define DRIVER_NAME    "infinity_charging_control"
+#define DRIVER_VERSION "1.0"
 
-static int charging_mode = 1;
-static int custom_threshold = 85;
-static DEFINE_MUTEX(mode_lock);
+static int charging_mode = CHARGING_CTRL_ON;
+static int charge_limit_percent = 80;
+static bool driver_enabled = true;
 
-static void __iomem *smb2_base;
-static struct class *icc_class;
-static dev_t icc_dev;
-static struct cdev icc_cdev;
-static struct device *icc_device;
+/* Delayed work for monitoring */
+static struct delayed_work charge_monitor_work;
+static struct class *charge_class;
+static struct device *charge_dev;
+static struct cdev charge_cdev;
+static dev_t charge_dev_t;
+static int charge_major;
 
-#define THRESHOLD_80 80
-#define THRESHOLD_90 90
-#define THRESHOLD_100 100
+/* Mode names for sysfs display */
+static const char *mode_names[] = {
+    [CHARGING_CTRL_OFF]    = "off",
+    [CHARGING_CTRL_ON]     = "on",
+    [CHARGING_CTRL_PAUSE]  = "pause",
+    [CHARGING_CTRL_LIMIT]  = "limit",
+    [CHARGING_CTRL_BYPASS] = "bypass",
+};
 
-static ssize_t mode_show(struct device *dev,
-                         struct device_attribute *attr, char *buf)
+/* ── Monitor work ────────────────────────────────── */
+static void charge_monitor_fn(struct work_struct *work)
 {
-    int mode;
-    mutex_lock(&mode_lock);
-    mode = charging_mode;
-    mutex_unlock(&mode_lock);
-    return snprintf(buf, PAGE_SIZE, "%d\n", mode);
-}
-
-static ssize_t mode_store(struct device *dev,
-                          struct device_attribute *attr,
-                          const char *buf, size_t count)
-{
-    long val;
-    int ret;
-
-    ret = kstrtol(buf, 10, &val);
-    if (ret)
-        return ret;
-
-    if (val < 0 || val > 4)
-        return -EINVAL;
-
-    mutex_lock(&mode_lock);
-    charging_mode = (int)val;
-
-    switch (charging_mode) {
-    case CHARGING_MODE_BYPASS:
-        pr_info("%s: Bypass mode — charging disabled\n", DRIVER_NAME);
-        break;
-    case CHARGING_MODE_NORMAL:
-        pr_info("%s: Normal mode — charge to %d%%\n",
-                DRIVER_NAME, THRESHOLD_100);
-        break;
-    case CHARGING_MODE_LIMIT_80:
-        pr_info("%s: Limit mode — charge to %d%%\n",
-                DRIVER_NAME, THRESHOLD_80);
-        break;
-    case CHARGING_MODE_LIMIT_90:
-        pr_info("%s: Limit mode — charge to %d%%\n",
-                DRIVER_NAME, THRESHOLD_90);
-        break;
-    case CHARGING_MODE_CUSTOM:
-        pr_info("%s: Custom mode — charge to %d%%\n",
-                DRIVER_NAME, custom_threshold);
-        break;
-    }
-    mutex_unlock(&mode_lock);
-
-    return count;
-}
-
-static DEVICE_ATTR_RW(mode);
-
-static ssize_t threshold_show(struct device *dev,
-                              struct device_attribute *attr, char *buf)
-{
-    int thresh;
-    mutex_lock(&mode_lock);
-    thresh = custom_threshold;
-    mutex_unlock(&mode_lock);
-    return snprintf(buf, PAGE_SIZE, "%d\n", thresh);
-}
-
-static ssize_t threshold_store(struct device *dev,
-                               struct device_attribute *attr,
-                               const char *buf, size_t count)
-{
-    long val;
-    int ret;
-
-    ret = kstrtol(buf, 10, &val);
-    if (ret)
-        return ret;
-
-    if (val < 50 || val > 100)
-        return -EINVAL;
-
-    mutex_lock(&mode_lock);
-    custom_threshold = (int)val;
-    mutex_unlock(&mode_lock);
-    pr_info("%s: Custom threshold set to %d%%\n", DRIVER_NAME, (int)val);
-
-    return count;
-}
-
-static DEVICE_ATTR_RW(threshold);
-
-static int get_battery_capacity(void)
-{
-    union power_supply_propval val = {0};
+    union power_supply_propval val = { .intval = 0 };
     struct power_supply *psy;
-    int ret = -ENODEV;
+    int capacity = 0;
 
     psy = power_supply_get_by_name("battery");
     if (psy) {
-        ret = power_supply_get_property(psy,
-                    POWER_SUPPLY_PROP_CAPACITY, &val);
+        power_supply_get_property(psy, POWER_SUPPLY_PROP_CAPACITY, &val);
+        capacity = val.intval;
         power_supply_put(psy);
-        if (!ret)
-            return val.intval;
     }
-    return ret;
+
+    /* Limit mode: disable charging above threshold */
+    if (charging_mode == CHARGING_CTRL_LIMIT && charge_limit_percent > 0) {
+        if (capacity >= charge_limit_percent) {
+            psy = power_supply_get_by_name("battery");
+            if (psy) {
+                val.intval = 0;
+                power_supply_set_property(psy, POWER_SUPPLY_PROP_CHARGE_ENABLE, &val);
+                power_supply_put(psy);
+            }
+        } else {
+            psy = power_supply_get_by_name("battery");
+            if (psy) {
+                val.intval = 1;
+                power_supply_set_property(psy, POWER_SUPPLY_PROP_CHARGE_ENABLE, &val);
+                power_supply_put(psy);
+            }
+        }
+    }
+
+    /* Reschedule every 30 seconds */
+    schedule_delayed_work(&charge_monitor_work, msecs_to_jiffies(30000));
 }
 
-static long icc_ioctl(struct file *file, unsigned int cmd,
-                      unsigned long arg)
+/* ── Sysfs show/store ────────────────────────────── */
+static ssize_t mode_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-    struct infinity_charging_req req;
-    int cap;
+    if (charging_mode >= 0 && charging_mode <= CHARGING_CTRL_BYPASS)
+        return snprintf(buf, PAGE_SIZE, "%s\n", mode_names[charging_mode]);
+    return snprintf(buf, PAGE_SIZE, "unknown\n");
+}
+
+static ssize_t mode_store(struct device *dev, struct device_attribute *attr,
+                          const char *buf, size_t count)
+{
+    int i;
+    char input[16];
+
+    if (count >= sizeof(input))
+        return -EINVAL;
+
+    memcpy(input, buf, count);
+    input[count] = '\0';
+
+    /* Strip trailing newline */
+    if (count > 0 && input[count - 1] == '\n')
+        input[count - 1] = '\0';
+
+    for (i = 0; i <= CHARGING_CTRL_BYPASS; i++) {
+        if (strcmp(input, mode_names[i]) == 0) {
+            charging_mode = i;
+            pr_info(DRIVER_NAME ": mode set to %s\n", mode_names[i]);
+            return count;
+        }
+    }
+
+    pr_err(DRIVER_NAME ": invalid mode '%s'\n", input);
+    return -EINVAL;
+}
+
+static ssize_t limit_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    return snprintf(buf, PAGE_SIZE, "%d\n", charge_limit_percent);
+}
+
+static ssize_t limit_store(struct device *dev, struct device_attribute *attr,
+                           const char *buf, size_t count)
+{
+    int val;
+    if (kstrtoint(buf, 10, &val) < 0)
+        return -EINVAL;
+    if (val < 5 || val > 100)
+        return -EINVAL;
+    charge_limit_percent = val;
+    pr_info(DRIVER_NAME ": limit set to %d%%\n", val);
+    return count;
+}
+
+static ssize_t enable_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    return snprintf(buf, PAGE_SIZE, "%d\n", driver_enabled ? 1 : 0);
+}
+
+static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
+                            const char *buf, size_t count)
+{
+    int val;
+    if (kstrtoint(buf, 10, &val) < 0)
+        return -EINVAL;
+    driver_enabled = !!val;
+    if (!driver_enabled)
+        cancel_delayed_work_sync(&charge_monitor_work);
+    else
+        schedule_delayed_work(&charge_monitor_work, msecs_to_jiffies(1000));
+    return count;
+}
+
+static DEVICE_ATTR(mode, 0644, mode_show, mode_store);
+static DEVICE_ATTR(limit, 0644, limit_show, limit_store);
+static DEVICE_ATTR(enable, 0644, enable_show, enable_store);
+
+static struct attribute *charge_attrs[] = {
+    &dev_attr_mode.attr,
+    &dev_attr_limit.attr,
+    &dev_attr_enable.attr,
+    NULL,
+};
+
+static const struct attribute_group charge_attr_group = {
+    .attrs = charge_attrs,
+};
+
+/* ── IOCTL handlers ──────────────────────────────── */
+static long charge_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    int val;
 
     switch (cmd) {
-    case INFINITY_IOCTL_SET_MODE:
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
+    case INFINITY_CHARGE_GET_MODE:
+        if (copy_to_user((int __user *)arg, &charging_mode, sizeof(int)))
             return -EFAULT;
-        if (req.mode < 0 || req.mode > 4)
+        return 0;
+
+    case INFINITY_CHARGE_SET_MODE:
+        if (copy_from_user(&val, (int __user *)arg, sizeof(int)))
+            return -EFAULT;
+        if (val < CHARGING_CTRL_OFF || val > CHARGING_CTRL_BYPASS)
             return -EINVAL;
-        mutex_lock(&mode_lock);
-        charging_mode = req.mode;
-        mutex_unlock(&mode_lock);
-        pr_info("%s: IOCTL set mode=%d\n", DRIVER_NAME, req.mode);
-        break;
+        charging_mode = val;
+        return 0;
 
-    case INFINITY_IOCTL_GET_MODE:
-        mutex_lock(&mode_lock);
-        req.mode = charging_mode;
-        mutex_unlock(&mode_lock);
-        if (copy_to_user((void __user *)arg, &req, sizeof(req)))
+    case INFINITY_CHARGE_GET_LEVEL:
+        if (copy_to_user((int __user *)arg, &charge_limit_percent, sizeof(int)))
             return -EFAULT;
-        break;
+        return 0;
 
-    case INFINITY_IOCTL_GET_CAPACITY:
-        cap = get_battery_capacity();
-        if (cap < 0)
-            return cap;
-        req.capacity = cap;
-        if (copy_to_user((void __user *)arg, &req, sizeof(req)))
+    case INFINITY_CHARGE_SET_LIMIT:
+        if (copy_from_user(&val, (int __user *)arg, sizeof(int)))
             return -EFAULT;
-        break;
+        if (val < 5 || val > 100)
+            return -EINVAL;
+        charge_limit_percent = val;
+        return 0;
 
     default:
         return -ENOTTY;
     }
-    return 0;
 }
 
-static int icc_open(struct inode *inode, struct file *file)
-{
-    return 0;
-}
-
-static int icc_release(struct inode *inode, struct file *file)
-{
-    return 0;
-}
-
-static const struct file_operations icc_fops = {
+/* ── File ops ────────────────────────────────────── */
+static const struct file_operations charge_fops = {
     .owner          = THIS_MODULE,
-    .open           = icc_open,
-    .release        = icc_release,
-    .unlocked_ioctl = icc_ioctl,
-    .compat_ioctl   = icc_ioctl,
+    .unlocked_ioctl = charge_ioctl,
+    .compat_ioctl   = charge_ioctl,
+    .open           = nonseekable_open,
 };
 
-static int icc_probe(struct platform_device *pdev)
+/* ── Platform probe/remove ────────────────────────── */
+static int infinity_charge_probe(struct platform_device *pdev)
 {
     int ret;
 
-    pr_info("%s: Probing Infinity Charging Control v1.0.49\n", DRIVER_NAME);
+    pr_info(DRIVER_NAME ": v%s probing\n", DRIVER_VERSION);
 
-    ret = alloc_chrdev_region(&icc_dev, 0, 1, DEVICE_NAME);
-    if (ret) {
-        pr_err("%s: alloc_chrdev_region failed: %d\n", DRIVER_NAME, ret);
+    /* Create device class */
+    charge_class = class_create(THIS_MODULE, DRIVER_NAME);
+    if (IS_ERR(charge_class))
+        return PTR_ERR(charge_class);
+
+    /* Allocate device number */
+    ret = alloc_chrdev_region(&charge_dev_t, 0, 1, DRIVER_NAME);
+    if (ret < 0) {
+        class_destroy(charge_class);
+        return ret;
+    }
+    charge_major = MAJOR(charge_dev_t);
+
+    /* Init cdev */
+    cdev_init(&charge_cdev, &charge_fops);
+    charge_cdev.owner = THIS_MODULE;
+    ret = cdev_add(&charge_cdev, charge_dev_t, 1);
+    if (ret < 0) {
+        unregister_chrdev_region(charge_dev_t, 1);
+        class_destroy(charge_class);
         return ret;
     }
 
-    cdev_init(&icc_cdev, &icc_fops);
-    icc_cdev.owner = THIS_MODULE;
-    ret = cdev_add(&icc_cdev, icc_dev, 1);
-    if (ret) {
-        pr_err("%s: cdev_add failed: %d\n", DRIVER_NAME, ret);
-        goto err_unregister;
+    /* Create device */
+    charge_dev = device_create(charge_class, NULL, charge_dev_t, NULL, "infinity_charger");
+    if (IS_ERR(charge_dev)) {
+        cdev_del(&charge_cdev);
+        unregister_chrdev_region(charge_dev_t, 1);
+        class_destroy(charge_class);
+        return PTR_ERR(charge_dev);
     }
 
-    icc_class = class_create(THIS_MODULE, CLASS_NAME);
-    if (IS_ERR(icc_class)) {
-        pr_err("%s: class_create failed\n", DRIVER_NAME);
-        ret = PTR_ERR(icc_class);
-        goto err_cdev_del;
-    }
+    /* Create sysfs */
+    ret = sysfs_create_group(&charge_dev->kobj, &charge_attr_group);
+    if (ret < 0)
+        pr_warn(DRIVER_NAME ": sysfs creation failed (%d)\n", ret);
 
-    icc_device = device_create(icc_class, NULL, icc_dev, NULL, DEVICE_NAME);
-    if (IS_ERR(icc_device)) {
-        pr_err("%s: device_create failed\n", DRIVER_NAME);
-        ret = PTR_ERR(icc_device);
-        goto err_class_destroy;
-    }
+    /* Start monitor */
+    INIT_DELAYED_WORK(&charge_monitor_work, charge_monitor_fn);
+    schedule_delayed_work(&charge_monitor_work, msecs_to_jiffies(5000));
 
-    ret = device_create_file(icc_device, &dev_attr_mode);
-    if (ret) {
-        pr_err("%s: device_create_file mode failed: %d\n", DRIVER_NAME, ret);
-        goto err_device_destroy;
-    }
-
-    ret = device_create_file(icc_device, &dev_attr_threshold);
-    if (ret) {
-        pr_err("%s: device_create_file threshold failed: %d\n", DRIVER_NAME, ret);
-        goto err_remove_mode;
-    }
-
-    pr_info("%s: Initialized — mode=%d, threshold=%d\n",
-            DRIVER_NAME, charging_mode, custom_threshold);
+    pr_info(DRIVER_NAME ": ready, mode=%s, limit=%d%%\n",
+            mode_names[charging_mode], charge_limit_percent);
     return 0;
-
-err_remove_mode:
-    device_remove_file(icc_device, &dev_attr_mode);
-err_device_destroy:
-    device_destroy(icc_class, icc_dev);
-err_class_destroy:
-    class_destroy(icc_class);
-err_cdev_del:
-    cdev_del(&icc_cdev);
-err_unregister:
-    unregister_chrdev_region(icc_dev, 1);
-    return ret;
 }
 
-static int icc_remove(struct platform_device *pdev)
+static int infinity_charge_remove(struct platform_device *pdev)
 {
-    device_remove_file(icc_device, &dev_attr_threshold);
-    device_remove_file(icc_device, &dev_attr_mode);
-    device_destroy(icc_class, icc_dev);
-    class_destroy(icc_class);
-    cdev_del(&icc_cdev);
-    unregister_chrdev_region(icc_dev, 1);
-    pr_info("%s: Removed\n", DRIVER_NAME);
+    cancel_delayed_work_sync(&charge_monitor_work);
+    sysfs_remove_group(&charge_dev->kobj, &charge_attr_group);
+    device_destroy(charge_class, charge_dev_t);
+    cdev_del(&charge_cdev);
+    unregister_chrdev_region(charge_dev_t, 1);
+    class_destroy(charge_class);
+    pr_info(DRIVER_NAME ": removed\n");
     return 0;
 }
 
-static const struct of_device_id icc_of_match[] = {
-    { .compatible = "qcom,sm8150" },
-    { },
+/* ── Device tree match ──────────────────────────── */
+static const struct of_device_id infinity_charge_id[] = {
+    { .compatible = "xiaomi,charging-control" },
+    { .compatible = "qcom,sm8150-charging" },
+    { /* sentinel */ }
 };
-MODULE_DEVICE_TABLE(of, icc_of_match);
+MODULE_DEVICE_TABLE(of, infinity_charge_id);
 
-static struct platform_driver icc_driver = {
-    .probe  = icc_probe,
-    .remove = icc_remove,
+static struct platform_driver infinity_charge_driver = {
+    .probe  = infinity_charge_probe,
+    .remove = infinity_charge_remove,
     .driver = {
         .name           = DRIVER_NAME,
-        .of_match_table = icc_of_match,
+        .of_match_table = infinity_charge_id,
     },
 };
 
-module_platform_driver(icc_driver);
+module_platform_driver(infinity_charge_driver);
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("MIT");
 MODULE_AUTHOR("Infinity Kernel Team");
-MODULE_DESCRIPTION("Charging Control Driver for SM8150 (Poco X3 Pro)");
-MODULE_VERSION("1.0.49");
+MODULE_DESCRIPTION("Infinity Charging Control for Poco X3 Pro (vayu/bhima)");
+MODULE_VERSION(DRIVER_VERSION);
