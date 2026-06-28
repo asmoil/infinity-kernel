@@ -1,239 +1,166 @@
-<h1 align="center">
-  <pre>
-   ██████╗ ██████╗  █████╗ ███╗   ██╗████████╗ ██████╗ ██████╗ ███████╗
-  ██╔════╝ ██╔══██╗██╔══██╗████╗  ██║╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝
-  ██║  ███╗██████╔╝███████║██╔██╗ ██║   ██║   ██║   ██║██████╔╝█████╗
-  ██║   ██║██╔══██╗██╔══██║██║╚██╗██║   ██║   ██║   ██║██╔══██╗██╔══╝
-  ╚██████╔╝██║  ███████║██║  ╚████║   ██║   ╚██████╔╝██║  ██║███████╗
-   ╚═════╝ ╚═╝  ╚════╝╚═╝   ╚═══╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚══════╝
-  </pre>
-</h1>
+# Infinity Kernel
 
-<p align="center">
-  <b>Custom Kernel for Poco X3 Pro (vayu/bhima)</b><br>
-  SM8250-AC (Snapdragon 860) &bull; Linux 4.14 &bull; Proton Clang 17
-</p>
+Кастомное ядро для **Poco X3 Pro** (vayu/bhima) на базе **LineageOS android_kernel_qcom_sm8150** (Linux 4.14.357, SM8150).
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Version-v1.0.7-blue?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/Device-vayu%20%7C%20bhima-orange?style=flat-square" alt="Device">
-  <img src="https://img.shields.io/badge/SoC-SM8250--AC-red?style=flat-square" alt="SoC">
-</p>
+## О проекте
 
----
+Infinity Kernel — это оптимизированное ядро для Poco X3 Pro, ориентированное на производительность, стабильность и расширенные возможности управления зарядом. Включает в себя KernelSU-Next для root-доступа и SuSFS для скрытия модификаций.
 
-## Features
+### Основные возможности
 
-### Performance & Battery Balance
+- **KernelSU-Next v3.2.0** — современный root-менеджер
+- **SuSFS v2.1.0** — скрытие файловой системы от обнаружения
+- **Neutron Clang** — оптимизированный тулчейн для лучшей производительности
+- **Управление зарядом** — 5 режимов (OFF / ON / PAUSE / LIMIT / BYPASS) через sysfs и IOCTL
+- **TCP BBR** — улучшенный алгоритм управления перегрузкой TCP
+- **BFQ / Maple I/O** — оптимизированные планировщики ввода-вывода
+- **ZRAM 5GB + KSM** — эффективное управление памятью
+- **HZ_300** — таймер 300 Гц для лучшей отзывчивости
+- **AnyKernel3** — простая установка через recovery (поддержка A/B слотов)
 
-- **CPU Tuning** — 300Hz tick rate, optimized scheduler latency (4ms), schedutil governor with faster response
-- **GPU (Adreno 618)** — Raised thermal throttle threshold to 50°C, sysfs `gpu_max_freq` control, faster idle timer
-- **I/O Scheduler** — Maple (preferred) / BFQ fallback, 128KB read-ahead, FSYNC optimization
-- **TCP** — BBR congestion control by default, TCP Fast Open (client+server), tuned rmem/wmem buffers
-- **Memory** — ZRAM 5GB LZ4, KSM (Kernel Same-page Merging), CMA 256MB, aggressive compaction, THP MADVISE
-
-### Charging Bypass (Gaming)
-
-4 gaming modes with thermal monitoring and auto-resume safety:
-
-| Mode | Pause at | Thermal Limit | Current Reduction |
-|------|----------|---------------|-------------------|
-| **OFF** | — | — | 0% |
-| **LIGHT** | 80% | 45°C | 10% |
-| **BALANCED** | 70% | 40°C | 30% |
-| **EXTREME** | 60% | 35°C | 50% |
-| **ULTRA** | 50% | 35°C | 70% |
-
-- Thermal monitoring every 2 seconds with 5°C hysteresis
-- Auto-resume charging below 15% (safety)
-- Sysfs interface: `/sys/kernel/infinity_charging/`
-- IOCTL interface: `/dev/infinity-charging`
-
-### Cross-ROM Compatibility
-
-Works out of the box with:
-
-- **MIUI** (V12–V15) — automatic DSI phyd patch applied only on MIUI
-- **HyperOS** — full support, no MIUI patches applied
-- **AOSP Custom ROMs** — LineageOS, crDroid, PixelExperience, Evolution X, and any other
-
-ROM detection runs automatically in `anykernel.sh` and applies ROM-specific patches only when needed.
-
-### Root Manager Support
-
-Compatible with 6 root managers (module signature, vermagic, and SELinux bypass):
-
-- **KernelSU**
-- **KernelSU Next**
-- **Magisk**
-- **APatch**
-- **ReSukiSu**
-- **SukiSU Ultra**
-
-Required kernel features: `KPROBES`, `UPROBES`, `FTRACE`, `DYNAMIC_FTRACE`, `DYNAMIC_FTRACE_WITH_REGS`, `BPF_SYSCALL`, `TRACER_SNAPSHOT`.
-
-### SUFS v1.5.7+
-
-Systemless UFS filesystem stub — enables SUFS overlay mount capabilities for advanced root managers at the kernel level.
-
----
-
-## Project Structure
+## Структура репозитория
 
 ```
 .
-├── .circleci/
-│   └── config.yml                  # CI pipeline (Proton Clang 17, auto-build)
-├── AnyKernel3/
-│   ├── META-INF/com/google/android/
-│   │   └── update-binary           # AK3 entry point
-│   ├── anykernel.sh                # Flash script with ROM detection
-│   ├── banner                      # ASCII art
-│   └── tools/
-│       ├── ak3-core.sh             # AnyKernel3 core (osm0sis)
-│       ├── magiskboot              # Boot image manipulator
-│       ├── magiskpolicy            # SELinux policy patcher
-│       ├── busybox                 # Embedded busybox
-│       ├── fec                     # Flash erase counter
-│       ├── httools_static          # Hardware tools
-│       ├── lptools_static          # LP partition tools
-│       ├── snapshotupdater_static  # Snapshot updater
-│       ├── kyriepatch.sh           # MIUI DSI patch (MIUI-only)
-│       └── infinity_init.sh        # Boot init (BBR, ZRAM, KSM, etc.)
+├── .github/workflows/build.yml   # CI: GitHub Actions (Neutron Clang)
+├── .gitignore
 ├── arch/arm64/configs/
-│   └── infinity_defconfig          # Kconfig fragment (merged on vayu_user_defconfig)
-├── patches/
-│   └── apply_all.sh                # All-in-one sed patch script (7 sections)
+│   └── infinity_defconfig        # Конфигурация ядра
 ├── drivers/charging/
-│   ├── infinity_charging_control.c  # Charging bypass platform driver
-│   ├── Kconfig
-│   └── Makefile
+│   ├── Kconfig                   # Конфиг драйвера зарядки
+│   ├── Makefile
+│   └── infinity_charging_control.c  # Драйвер управления зарядом
 ├── include/linux/
-│   └── infinity_charging_control.h  # Driver header
-├── scripts/charging_bypass/
-│   └── infinity_charging.dts        # Device tree overlay
-├── LICENSE                          # MIT License
-└── README.md
+│   └── infinity_charging_control.h  # Заголовочный файл драйвера
+├── patches/
+│   └── apply_all.sh              # Скрипт применения патчей
+└── AnyKernel3/                   # Флешер для установки
+    ├── anykernel.sh              # Конфигурация AnyKernel3
+    ├── tools/
+    │   ├── infinity_init.sh      # Пост-установка (BBR, ZRAM, KSM, VM)
+    │   └── ...                   # Утилиты AnyKernel3
+    └── META-INF/com/google/android/
+        ├── update-binary
+        └── updater-script
 ```
 
----
+## Сборка
 
-## How to Build
+Сборка полностью автоматизирована через **GitHub Actions**. При пуше в `main` или `master` запускается CI, который:
 
-### Automatic (CircleCI)
+1. Скачивает **Neutron Clang** (tag `17062026`)
+2. Получает исходники ядра из `kernel_scr/` или клонирует [LineageOS sm8150](https://github.com/LineageOS/android_kernel_qcom_sm8150)
+3. Интегрирует **KernelSU-Next v3.2.0** и **SuSFS v2.1.0**
+4. Применяет конфигурацию, патчи и 11 source compat fixes
+5. Собирает `Image.gz-dtb`
+6. Упаковывает в AnyKernel3 ZIP и выкладывает как artifact
 
-1. Push this repo to GitHub
-2. Enable CircleCI for the repository
-3. CI will automatically build on push to `main`, `master`, or `dev`
-4. Download `InfinityKernel-v1.0.7-vayu.zip` from CircleCI artifacts
-
-### Manual Build
+### Локальная сборка
 
 ```bash
-# Clone this repo
-git clone https://github.com/YOUR_USER/InfinityKernel.git
-cd InfinityKernel
+# Клонировать репозиторий
+git clone https://github.com/<твой-юзернейм>/infinity-kernel.git
+cd infinity-kernel
 
-# Clone Xiaomi kernel source
-git clone --depth=1 -b vayu-r-oss \
-  https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel_src
+# Подготовить исходники ядра (если нет локального kernel_scr/)
+git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150 kernel_scr
 
-# Generate base .config from the REAL device defconfig
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- vayu_user_defconfig O=out
+# Скачать Neutron Clang
+mkdir -p $HOME/toolchains/neutron-clang
+curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/17062026" \
+  | grep -o '"browser_download_url": *"[^"]*x86_64[^"]*\.tar\.zst"' | head -1 | cut -d'"' -f4 \
+  | xargs curl -L -o /tmp/neutron.tar.zst
+tar -I zstd -xf /tmp/neutron.tar.zst -C $HOME/toolchains/neutron-clang --strip-components=1
 
-# Merge Infinity defconfig fragment ON TOP of base
-scripts/kconfig/merge_config.sh -m out/.config arch/arm64/configs/infinity_defconfig
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig O=out
+# Установить зависимости (Ubuntu 22.04)
+sudo apt-get install -y bc bison build-essential flex git libelf-dev liblz4-tool \
+  libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool \
+  squashfs-tools xsltproc zip zlib1g-dev gcc-aarch64-linux-gnu \
+  binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi zstd
 
-# Apply source patches (sed-based, 7 sections)
-bash patches/apply_all.sh kernel_src
+# Собрать
+export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
+export KERNEL_SRC="kernel_scr"
 
-# Clone Proton Clang 17 (git, NOT tar.gz)
-git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
+# Скопировать файлы ядра
+cp -rv arch/arm64/configs/infinity_defconfig "$KERNEL_SRC/arch/arm64/configs/"
+cp -rv include/linux/infinity_charging_control.h "$KERNEL_SRC/include/linux/"
+cp -rv drivers/charging "$KERNEL_SRC/drivers/"
+cp -rv patches "$KERNEL_SRC/patches"
 
-# Fix LLVM host tools conflict (as -> as.llvm)
-cd proton-clang/bin
-for tool in as nm ar ranlib objcopy objdump strip; do
-  [ -f "$tool" ] && mv "$tool" "${tool}.llvm"
-done
-cd ../..
-
-# Build
-make -j$(nproc) \
-  ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-  CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-  CC=$PWD/proton-clang/bin/clang \
-  CLANG_TRIPLE=aarch64-linux-gnu- \
-  HOSTCC=gcc KCFLAGS="-Wno-error" O=out
-
-# Package
-cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-cd AnyKernel3
-zip -r9 ../InfinityKernel-v1.0.7-vayu.zip . -x ".git*" "patch/*" "ramdisk/*" "split_img/*"
+# Конфигурация и сборка
+cd "$KERNEL_SRC"
+make ARCH=arm64 vendor/sm8150_defconfig O=out
+scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/infinity_defconfig
+make ARCH=arm64 olddefconfig O=out
+make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- \
+  CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm \
+  OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+  HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes \
+  -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+  KCFLAGS="-Wno-error" -j$(nproc) Image.gz-dtb dtbs
 ```
 
----
+## Установка
 
-## How to Flash
+1. Скачать `infinity-kernel-v1.0.56.zip` из **Actions** (вкладка на GitHub)
+2. Перенести на телефон
+3. Загрузиться в recovery (TWRP / OrangeFox)
+4. Установить ZIP
+5. Перезагрузиться
 
-1. Download `InfinityKernel-v1.0.7-vayu.zip` from [Releases](../../releases)
-2. Reboot to recovery (TWRP, OrangeFox, etc.)
-3. Flash the ZIP
-4. Reboot
+> **Важно**: ядро поддерживает A/B слоты (`is_slot_device=1`), установка системная (`do.systemless=1`).
 
-### Charging Bypass Usage
+## Управление зарядом
+
+Драйвер заряда доступен через sysfs после установки:
 
 ```bash
-# Set gaming mode (run as root)
-echo 1 > /sys/kernel/infinity_charging/charging_mode   # LIGHT
-echo 2 > /sys/kernel/infinity_charging/charging_mode   # BALANCED
-echo 3 > /sys/kernel/infinity_charging/charging_mode   # EXTREME
-echo 4 > /sys/kernel/infinity_charging/charging_mode   # ULTRA
-echo 0 > /sys/kernel/infinity_charging/charging_mode   # OFF (normal)
+# Текущий режим
+cat /sys/class/power_supply/battery/charge_ctrl_mode
 
-# Check status
-cat /sys/kernel/infinity_charging/status
-cat /sys/kernel/infinity_charging/battery_temp
-cat /sys/kernel/infinity_charging/battery_level
+# Установить режим
+echo "limit" > /sys/class/power_supply/battery/charge_ctrl_mode
 
-# Adjust thermal limit (Celsius)
-echo 38 > /sys/kernel/infinity_charging/thermal_limit
-
-# Adjust auto-resume threshold (percentage)
-echo 20 > /sys/kernel/infinity_charging/auto_resume_threshold
+# Установить лимит заряда (проценты)
+echo "80" > /sys/class/power_supply/battery/charge_ctrl_limit
 ```
 
----
+| Режим | Описание |
+|-------|----------|
+| `on` | Обычная зарядка (по умолчанию) |
+| `off` | Зарядка отключена |
+| `pause` | Пауза на текущем уровне |
+| `limit` | Ограничение до заданного % |
+| `bypass` | Напрямую от питания (без батареи) |
 
-## Kernel Source
+## Тюнинг (автоматический при установке)
 
-Base source: [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/vayu-r-oss) (`vayu-r-oss` branch)
+Скрипт `infinity_init.sh` автоматически настраивает при первой загрузке:
 
-This repository contains only the build configuration, patches, AnyKernel3 flasher, and custom drivers. The full kernel source is cloned at build time from the Xiaomi repository.
+- **TCP BBR** — алгоритм конгест-контроля
+- **I/O Scheduler** — Maple (приоритет) / BFQ (запасной)
+- **ZRAM** — 5 GB сжатой подкачки
+- **KSM** — объединение одинаковых страниц памяти
+- **VM** — dirty ratios, vfs_cache_pressure, swappiness=0, min_free_kbytes=4096
 
----
+## Поддерживаемые устройства
 
-## Toolchain
+| Устройство | Кодовое имя | SoC |
+|-----------|-------------|-----|
+| Poco X3 Pro | vayu / bhima | Snapdragon 860 (SM8150) |
 
-- **Compiler**: [Proton Clang 17](https://github.com/kdrag0n/proton-clang) by kdrag0n
-- **Kernel**: Linux 4.14 (from Xiaomi OSS)
-- **Format**: AnyKernel3 by osm0sis
+## Стек
 
----
+| Компонент | Версия |
+|-----------|--------|
+| Ядро | Linux 4.14.357 |
+| Тулчейн | Neutron Clang (17062026) |
+| Root | KernelSU-Next v3.2.0 |
+| Стелс | SuSFS v2.1.0 |
+| Установщик | AnyKernel3 |
+| CI | GitHub Actions |
 
-## Credits
+## Лицензия
 
-- [Xiaomi](https://github.com/MiCode) — Kernel source
-- [kdrag0n](https://github.com/kdrag0n) — Proton Clang
-- [osm0sis](https://github.com/osm0sis) — AnyKernel3
-- [topjohnwu](https://github.com/topjohnwu) — Magisk (tools)
-- [tiann](https://github.com/tiann) — KernelSU reference
-
----
-
-## License
-
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
-> **Note**: The kernel source from Xiaomi is under its own license. This repository's custom code (patches, drivers, scripts, AnyKernel3 configuration) is MIT-licensed.
+MIT
