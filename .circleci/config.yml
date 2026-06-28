@@ -1,26 +1,32 @@
-# Infinity Kernel v1.0.53
+# Infinity Kernel v1.0.56
 # Poco X3 Pro (vayu/bhima) | SM8150 (LineageOS base) | Linux 4.14.357
-# LLVM/Clang 23 (apt.llvm.org) | AnyKernel3 | MIT License
+# Neutron Clang (clang-build-catalogue) | AnyKernel3 | MIT License
 version: 2.1
 
 jobs:
   build:
     working_directory: ~/project
     docker:
-      - image: cimg/base:stable
+      - image: ubuntu:22.04
     steps:
       - checkout
 
-      # ── Step 1: Install dependencies + Clang 23 ──────────────
+      # ── Step 1: Install dependencies + Neutron Clang ───
       - run:
-          name: "Install dependencies + LLVM/Clang 23"
+          name: "Install dependencies + Neutron Clang"
           command: |
-            sudo apt-get update
-            sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python3 ca-certificates lsb-release wget
-            wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s 23
-            echo "Clang 23: $(/usr/lib/llvm-23/bin/clang --version 2>&1 | head -1)"
+            apt-get update
+            apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev zstd gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget patchelf
+            TC_DIR="$HOME/tc"
+            TC_TAG="17062026"
+            mkdir -p "$TC_DIR"
+            curl -LO "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${TC_TAG}/neutron-clang-${TC_TAG}.tar.zst"
+            tar -xf "neutron-clang-${TC_TAG}.tar.zst" -C "$TC_DIR" --strip-components=1
+            rm -f "neutron-clang-${TC_TAG}.tar.zst"
+            echo "export PATH=$TC_DIR/bin:\$PATH" >> "$BASH_ENV"
+            echo "Neutron Clang: $($TC_DIR/bin/clang --version 2>&1 | head -1)"
 
-      # ── Step 2: Get kernel source (local or clone) ───────
+      # ── Step 2: Get kernel source (local or clone) ─────
       - run:
           name: "Get kernel source (local or clone)"
           command: |
@@ -34,12 +40,12 @@ jobs:
             echo "KERNEL_SRC=$KERNEL_SRC"
             ls "$KERNEL_SRC/arch/arm64/configs/" | head -5
 
-      # ── Step 3: KernelSU-Next v3.2.0 ────────────────────────
+      # ── Step 3: KernelSU-Next v3.2.0 ──────────────────
       - run:
           name: "KernelSU-Next v3.2.0"
           command: |
             KERNEL_SRC="kernel_scr"
-            cd "$KERNEL_SRC"
+            cd "$KERNEL_SRC" || { echo "WARN: $KERNEL_SRC not found, skip KernelSU"; exit 0; }
             if [ -d "KernelSU/kernel" ]; then
               echo "KernelSU already present"
             else
@@ -60,19 +66,20 @@ jobs:
               [ "$KSU_OK" = "1" ] && echo "KernelSU ready" || echo "WARNING: no KernelSU"
             fi
 
-      # ── Step 4: SuSFS v2.1.0 ────────────────────────────────
+      # ── Step 4: SuSFS v2.1.0 ──────────────────────────
       - run:
           name: "SuSFS v2.1.0"
           command: |
             KERNEL_SRC="kernel_scr"
-            cd "$KERNEL_SRC"
+            cd "$KERNEL_SRC" || { echo "WARN: $KERNEL_SRC not found, skip SuSFS"; exit 0; }
             if [ -f ".susfs_v210" ]; then echo "SuSFS already applied"; exit 0; fi
+            set +e
             for REPO in "https://github.com/AnymoreProject/susfs4ksu" "https://github.com/sidex15/susfs4ksu"; do
               TMPD=$(mktemp -d)
               if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --config "credential.helper=" "$REPO" "$TMPD/r" 2>/dev/null; then
                 PF=$(find "$TMPD/r" -name "*4.14*.patch" 2>/dev/null | sort | head -1)
                 if [ -n "$PF" ] && grep -q "susfs" "$PF" 2>/dev/null; then
-                  patch -p1 --forward < "$PF" 2>/dev/null || true
+                  patch -p1 --forward < "$PF" 2>/dev/null
                   touch .susfs_v210
                   echo "SuSFS applied from $REPO"
                 fi
@@ -80,12 +87,15 @@ jobs:
               rm -rf "$TMPD"
               [ -f .susfs_v210 ] && break
             done
+            set -e
+            echo "SuSFS step done"
 
-      # ── Step 5: Copy infinity files ──────────────────────────
+      # ── Step 5: Copy infinity files ─────────────────────
       - run:
           name: "Copy infinity kernel files"
           command: |
             KERNEL_SRC="kernel_scr"
+            cd "$KERNEL_SRC" || { echo "ERROR: $KERNEL_SRC not found"; exit 1; }
             cp -rv arch/arm64/configs/infinity_defconfig "$KERNEL_SRC/arch/arm64/configs/infinity_defconfig"
             cp -rv include/linux/infinity_charging_control.h "$KERNEL_SRC/include/linux/infinity_charging_control.h"
             cp -rv drivers/charging "$KERNEL_SRC/drivers/charging"
@@ -94,7 +104,7 @@ jobs:
             cp -rv patches "$KERNEL_SRC/patches"
             echo "Files copied OK"
 
-      # ── Step 6: Config ──────────────────────────────────────
+      # ── Step 6: Config ────────────────────────────────
       - run:
           name: "Config (sm8150_defconfig + merge + disable + HIDDEN)"
           command: |
@@ -138,7 +148,7 @@ jobs:
             touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
             echo "Config ready"
 
-      # ── Step 7: OpenSSL 3.0 ─────────────────────────────────
+      # ── Step 7: OpenSSL 3.0 ──────────────────────────
       - run:
           name: "OpenSSL 3.0 patches"
           command: |
@@ -147,7 +157,7 @@ jobs:
             [ -f "$KERNEL_SRC/scripts/sign-file.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/scripts/sign-file.c"
             echo "OpenSSL patched"
 
-      # ── Step 8: apply_all.sh + SuSFS config ──────────────────
+      # ── Step 8: apply_all.sh + SuSFS config ───────────
       - run:
           name: "Apply patches + SuSFS config"
           command: |
@@ -157,7 +167,7 @@ jobs:
             grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
-      # ── Step 9: Source compat fixes (11 fixes, sed/awk only) ──
+      # ── Step 9: Source compat fixes (11 fixes) ────────
       - run:
           name: "Source compat fixes (11 fixes)"
           command: |
@@ -223,7 +233,7 @@ jobs:
             fi
             echo "=== All 11 fixes applied ==="
 
-      # ── Step 10: Clean source tree ───────────────────────────
+      # ── Step 10: Clean source tree ────────────────────
       - run:
           name: "Clean source tree"
           command: |
@@ -232,13 +242,12 @@ jobs:
             rm -f .config
             rm -rf include/config
 
-      # ── Step 11: Build ───────────────────────────────────────
+      # ── Step 11: Build (Neutron Clang) ────────────────
       - run:
           name: "Build Infinity Kernel"
           no_output_timeout: 30m
           command: |
             KERNEL_SRC="kernel_scr"
-            CLANG_DIR="/usr/lib/llvm-23/bin"
             cd "$KERNEL_SRC"
             make ARCH=arm64 O=out olddefconfig </dev/null 2>&1 || true
             HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
@@ -248,18 +257,18 @@ jobs:
               [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; }; }
             done
             touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
-            set -o pipefail
-            make O=out ARCH=arm64 CC=$CLANG_DIR/clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LD=$CLANG_DIR/ld.lld AR=$CLANG_DIR/llvm-ar NM=$CLANG_DIR/llvm-nm OBJCOPY=$CLANG_DIR/llvm-objcopy OBJDUMP=$CLANG_DIR/llvm-objdump STRIP=$CLANG_DIR/llvm-strip HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" KCFLAGS="-Wno-error" -j$(nproc) Image.gz-dtb dtbs 2>&1 | tee /tmp/kernel_build.log
-            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" KCFLAGS="-Wno-error" -j$(nproc) Image.gz-dtb dtbs 2>&1 | tee /tmp/kernel_build.log
+            RET=${PIPESTATUS[0]}
+            if [ "$RET" -ne 0 ]; then
               echo "=========================================="
-              echo "  BUILD ERROR"
+              echo "  BUILD ERROR (exit $RET)"
               echo "=========================================="
               grep -E "error:" /tmp/kernel_build.log | head -40
               tail -80 /tmp/kernel_build.log
               exit 1
             fi
 
-      # ── Step 12: Package ─────────────────────────────────────
+      # ── Step 12: Package ──────────────────────────────
       - run:
           name: "Package AnyKernel3 ZIP"
           command: |
@@ -269,11 +278,11 @@ jobs:
             echo "Image: $(du -sh "$IMG" | cut -f1)"
             cp -v "$IMG" AnyKernel3/
             cd AnyKernel3
-            zip -r9 /tmp/infinity-kernel-v1.0.53.zip *
+            zip -r9 /tmp/infinity-kernel-v1.0.56.zip *
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.53.zip
-          destination: infinity-kernel-v1.0.53.zip
+          path: /tmp/infinity-kernel-v1.0.56.zip
+          destination: infinity-kernel-v1.0.56.zip
 
 workflows:
   infinity_build:
