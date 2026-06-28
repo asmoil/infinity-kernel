@@ -7,7 +7,7 @@ jobs:
   build:
     working_directory: ~/project
     docker:
-      - image: ubuntu:22.04
+      - image: ubuntu:24.04
     steps:
       - checkout
 
@@ -15,8 +15,8 @@ jobs:
       - run:
           name: "Install dependencies + Neutron Clang"
           command: |
-            apt-get update
-            apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev zstd gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget patchelf
+            DEBIAN_FRONTEND=noninteractive apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev zstd gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget patchelf
             TC_DIR="$HOME/tc"
             TC_TAG="17062026"
             mkdir -p "$TC_DIR"
