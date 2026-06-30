@@ -95,7 +95,7 @@ jobs:
           name: "Copy infinity kernel files"
           command: |
             KERNEL_SRC="kernel_scr"
-            cd "$KERNEL_SRC" || { echo "ERROR: $KERNEL_SRC not found"; exit 1; }
+            [ -d "$KERNEL_SRC" ] || { echo "ERROR: $KERNEL_SRC not found"; exit 1; }
             cp -rv arch/arm64/configs/infinity_defconfig "$KERNEL_SRC/arch/arm64/configs/infinity_defconfig"
             cp -rv include/linux/infinity_charging_control.h "$KERNEL_SRC/include/linux/infinity_charging_control.h"
             cp -rv drivers/charging "$KERNEL_SRC/drivers/charging"
