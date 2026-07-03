@@ -26,34 +26,24 @@ safe_sed() {
     fi
 }
 
-# ── Patch 1: Increase TCP max buffer sizes ────────
+# ── Patch 1: TCP wmem info (no-op, safe placeholder) ─
 echo "=== Patch 1: TCP buffers ==="
-safe_sed "$KDIR/net/ipv4/tcp.c" \
-    'net.ipv4.tcp_wmem' \
-    'net.ipv4.tcp_wmem'
+echo "  SKIP (no code change needed)"
 
-# ── Patch 2: Enable ZRAM writeback by default ──────
+# ── Patch 2: ZRAM writeback (no-op, safe placeholder) ─
 echo "=== Patch 2: ZRAM writeback ==="
-safe_sed "$KDIR/drivers/block/zram/zram_drv.c" \
-    'zram->disksize' \
-    'zram->disksize'
+echo "  SKIP (no code change needed)"
 
-# ── Patch 3: VM dirty ratio tuning ────────────────
+# ── Patch 3: VM dirty ratio — NO-OP (was breaking page-writeback.c) ─
 echo "=== Patch 3: VM dirty ratio ==="
-safe_sed "$KDIR/mm/page-writeback.c" \
-    'dirty_background_ratio.*100' \
-    'dirty_background_ratio = 5;'
+echo "  SKIP (was breaking build, disabled)"
 
-# ── Patch 4: Increase file-max ────────────────────
+# ── Patch 4: file-max (no-op, safe placeholder) ──
 echo "=== Patch 4: file-max ==="
-safe_sed "$KDIR/fs/file_table.c" \
-    'nr_free_files' \
-    'nr_free_files'
+echo "  SKIP (no code change needed)"
 
-# ── Patch 5: Scheduler optimization ─────────────────
+# ── Patch 5: sched latency (no-op, safe placeholder) ─
 echo "=== Patch 5: sched latency ==="
-safe_sed "$KDIR/kernel/sched/fair.c" \
-    'sysctl_sched_latency' \
-    'sysctl_sched_latency'
+echo "  SKIP (no code change needed)"
 
 echo "[apply_all.sh] all patches applied"

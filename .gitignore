@@ -1,21 +1,30 @@
-# Build artifacts
-out/
+# Build outputs
 *.zip
 *.tar.gz
-*.tar.zst
+*.tar.xz
+*.img
 
-# Kernel source (clone separately)
+# Kernel build
+out/
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+
+# Kernel source (cloned separately)
 kernel_scr/
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
-
-# CircleCI REMOVED — using GitHub Actions
-.circleci/

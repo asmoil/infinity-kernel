@@ -1,13 +1,20 @@
-# Infinity Kernel v1.0.56
+# Infinity Kernel v1.0.58
 # Poco X3 Pro (vayu/bhima) | SM8150 (LineageOS base) | Linux 4.14.357
 # Neutron Clang (clang-build-catalogue) | AnyKernel3 | MIT License
+# CI: CircleCI | OS: ubuntu:24.04 (glibc 2.39)
 version: 2.1
 
 jobs:
   build:
     working_directory: ~/project
     docker:
-      - image: ubuntu:22.04
+      - image: ubuntu:24.04
+    resource_class: large
+    environment:
+      KERNEL_SRC: "kernel_scr"
+      TC_DIR: "/root/tc"
+      TC_TAG: "17062026"
+      VERSION: "v1.0.58"
     steps:
       - checkout
 
@@ -15,68 +22,83 @@ jobs:
       - run:
           name: "Install dependencies + Neutron Clang"
           command: |
+            export DEBIAN_FRONTEND=noninteractive
             apt-get update
-            apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev zstd gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget patchelf
-            TC_DIR="$HOME/tc"
-            TC_TAG="17062026"
+            apt-get install -y bc bison build-essential ccache curl flex git gperf \
+              libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils \
+              lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev zstd \
+              gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+              gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
+              ca-certificates wget
             mkdir -p "$TC_DIR"
-            curl -LO "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${TC_TAG}/neutron-clang-${TC_TAG}.tar.zst"
-            tar -xf "neutron-clang-${TC_TAG}.tar.zst" -C "$TC_DIR" --strip-components=1
-            rm -f "neutron-clang-${TC_TAG}.tar.zst"
-            echo "export PATH=$TC_DIR/bin:\$PATH" >> "$BASH_ENV"
-            echo "Neutron Clang: $($TC_DIR/bin/clang --version 2>&1 | head -1)"
+            curl -sL "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${TC_TAG}/neutron-clang-${TC_TAG}.tar.zst" -o /tmp/neutron.tar.zst
+            tar -xf /tmp/neutron.tar.zst -C "$TC_DIR" --strip-components=1
+            rm -f /tmp/neutron.tar.zst
+            echo "export PATH=${TC_DIR}/bin:\$PATH" >> "$BASH_ENV"
+            clang --version 2>&1 | head -1
 
       # ── Step 2: Get kernel source (local or clone) ─────
       - run:
           name: "Get kernel source (local or clone)"
           command: |
-            KERNEL_SRC="kernel_scr"
             if [ -d "$KERNEL_SRC/arch/arm64" ]; then
-              echo "Using local kernel_scr"
+              echo "Using local $KERNEL_SRC"
             else
-              echo "kernel_scr not found, cloning LineageOS..."
+              echo "Cloning LineageOS kernel..."
               git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150 "$KERNEL_SRC"
             fi
-            echo "KERNEL_SRC=$KERNEL_SRC"
             ls "$KERNEL_SRC/arch/arm64/configs/" | head -5
 
       # ── Step 3: KernelSU-Next v3.2.0 ──────────────────
       - run:
           name: "KernelSU-Next v3.2.0"
           command: |
-            KERNEL_SRC="kernel_scr"
-            cd "$KERNEL_SRC" || { echo "WARN: $KERNEL_SRC not found, skip KernelSU"; exit 0; }
+            cd "$KERNEL_SRC" || { echo "WARN: kernel_src not found"; exit 0; }
             if [ -d "KernelSU/kernel" ]; then
               echo "KernelSU already present"
-            else
-              KSU_OK=0
-              for URL in "https://github.com/KernelSU-Next/KernelSU" "https://github.com/negrroo/KernelSU" "https://github.com/tiann/KernelSU"; do
-                if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main --config "credential.helper=" "$URL" KernelSU 2>/dev/null; then KSU_OK=1; break; fi
+              exit 0
+            fi
+            KSU_OK=0
+            for URL in \
+              "https://github.com/KernelSU-Next/KernelSU" \
+              "https://github.com/negrroo/KernelSU" \
+              "https://github.com/tiann/KernelSU"; do
+              if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main \
+                --config "credential.helper=" "$URL" KernelSU 2>/dev/null; then
+                KSU_OK=1; break
+              fi
+              rm -rf KernelSU
+            done
+            if [ "$KSU_OK" = "0" ]; then
+              for URL in \
+                "https://github.com/KernelSU-Next/KernelSU" \
+                "https://github.com/negrroo/KernelSU" \
+                "https://github.com/tiann/KernelSU"; do
+                if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch v3.2.0 \
+                  --config "credential.helper=" "$URL" KernelSU 2>/dev/null; then
+                  KSU_OK=1; break
+                fi
                 rm -rf KernelSU
               done
-              if [ "$KSU_OK" = "0" ]; then
-                for URL in "https://github.com/KernelSU-Next/KernelSU" "https://github.com/negrroo/KernelSU" "https://github.com/tiann/KernelSU"; do
-                  if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch v3.2.0 --config "credential.helper=" "$URL" KernelSU 2>/dev/null; then KSU_OK=1; break; fi
-                  rm -rf KernelSU
-                done
-              fi
-              if [ "$KSU_OK" = "1" ] && [ -f KernelSU/kernel/setup.sh ]; then
-                bash KernelSU/kernel/setup.sh -o KernelSU 2>/dev/null || true
-              fi
-              [ "$KSU_OK" = "1" ] && echo "KernelSU ready" || echo "WARNING: no KernelSU"
             fi
+            if [ "$KSU_OK" = "1" ] && [ -f KernelSU/kernel/setup.sh ]; then
+              bash KernelSU/kernel/setup.sh -o KernelSU 2>/dev/null || true
+            fi
+            [ "$KSU_OK" = "1" ] && echo "KernelSU ready" || echo "WARNING: no KernelSU"
 
       # ── Step 4: SuSFS v2.1.0 ──────────────────────────
       - run:
           name: "SuSFS v2.1.0"
           command: |
-            KERNEL_SRC="kernel_scr"
-            cd "$KERNEL_SRC" || { echo "WARN: $KERNEL_SRC not found, skip SuSFS"; exit 0; }
-            if [ -f ".susfs_v210" ]; then echo "SuSFS already applied"; exit 0; fi
+            cd "$KERNEL_SRC" || { echo "WARN: kernel_src not found"; exit 0; }
+            [ -f ".susfs_v210" ] && { echo "SuSFS already applied"; exit 0; }
             set +e
-            for REPO in "https://github.com/AnymoreProject/susfs4ksu" "https://github.com/sidex15/susfs4ksu"; do
+            for REPO in \
+              "https://github.com/AnymoreProject/susfs4ksu" \
+              "https://github.com/sidex15/susfs4ksu"; do
               TMPD=$(mktemp -d)
-              if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --config "credential.helper=" "$REPO" "$TMPD/r" 2>/dev/null; then
+              if GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
+                --config "credential.helper=" "$REPO" "$TMPD/r" 2>/dev/null; then
                 PF=$(find "$TMPD/r" -name "*4.14*.patch" 2>/dev/null | sort | head -1)
                 if [ -n "$PF" ] && grep -q "susfs" "$PF" 2>/dev/null; then
                   patch -p1 --forward < "$PF" 2>/dev/null
@@ -94,21 +116,22 @@ jobs:
       - run:
           name: "Copy infinity kernel files"
           command: |
-            KERNEL_SRC="kernel_scr"
+            REPO_DIR="$PWD"
             cd "$KERNEL_SRC" || { echo "ERROR: $KERNEL_SRC not found"; exit 1; }
-            cp -rv arch/arm64/configs/infinity_defconfig "$KERNEL_SRC/arch/arm64/configs/infinity_defconfig"
-            cp -rv include/linux/infinity_charging_control.h "$KERNEL_SRC/include/linux/infinity_charging_control.h"
-            cp -rv drivers/charging "$KERNEL_SRC/drivers/charging"
-            grep -q 'source "drivers/charging/Kconfig"' "$KERNEL_SRC/drivers/Kconfig" 2>/dev/null || echo 'source "drivers/charging/Kconfig"' >> "$KERNEL_SRC/drivers/Kconfig"
-            grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' "$KERNEL_SRC/drivers/Makefile" 2>/dev/null || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> "$KERNEL_SRC/drivers/Makefile"
-            cp -rv patches "$KERNEL_SRC/patches"
+            cp -v "$REPO_DIR/arch/arm64/configs/infinity_defconfig" arch/arm64/configs/infinity_defconfig
+            cp -v "$REPO_DIR/include/linux/infinity_charging_control.h" include/linux/infinity_charging_control.h
+            cp -rv "$REPO_DIR/drivers/charging" drivers/charging
+            grep -q 'source "drivers/charging/Kconfig"' drivers/Kconfig 2>/dev/null \
+              || echo 'source "drivers/charging/Kconfig"' >> drivers/Kconfig
+            grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' drivers/Makefile 2>/dev/null \
+              || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> drivers/Makefile
+            cp -rv "$REPO_DIR/patches" patches
             echo "Files copied OK"
 
       # ── Step 6: Config ────────────────────────────────
       - run:
           name: "Config (sm8150_defconfig + merge + disable + HIDDEN)"
           command: |
-            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             PROTECTED="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
             DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_QCOM"
@@ -135,15 +158,23 @@ jobs:
               _s=0; for p in $PROTECTED; do [ "$cfg" = "$p" ] && _s=1 && break; done
               [ "$_s" = "1" ] && continue
               sed -i "/^${cfg}=/d" out/.config
-              grep -q "^# ${cfg} is not set" out/.config || echo "# ${cfg} is not set" >> out/.config
+              grep -q "^# ${cfg} is not set" out/.config \
+                || echo "# ${cfg} is not set" >> out/.config
             done
             make ARCH=arm64 olddefconfig O=out </dev/null || true
             HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
             make ARCH=arm64 O=out -j1 scripts 2>&1 | tail -3 || true
             for cfg in $HIDDEN; do
-              grep -q "^${cfg}=y" out/.config || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-              [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; }; }
-              [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; }; }
+              grep -q "^${cfg}=y" out/.config \
+                || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
+              [ -f out/include/config/auto.conf ] && {
+                grep -q "^${cfg}=y" out/include/config/auto.conf \
+                  || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; };
+              }
+              [ -f out/include/generated/autoconf.h ] && {
+                grep -q "#define ${cfg} 1" out/include/generated/autoconf.h \
+                  || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; };
+              }
             done
             touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
             echo "Config ready"
@@ -152,26 +183,29 @@ jobs:
       - run:
           name: "OpenSSL 3.0 patches"
           command: |
-            KERNEL_SRC="kernel_scr"
-            [ -f "$KERNEL_SRC/certs/extract-cert.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/certs/extract-cert.c"
-            [ -f "$KERNEL_SRC/scripts/sign-file.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/scripts/sign-file.c"
+            cd "$KERNEL_SRC"
+            [ -f "certs/extract-cert.c" ] \
+              && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' certs/extract-cert.c
+            [ -f "scripts/sign-file.c" ] \
+              && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' scripts/sign-file.c
             echo "OpenSSL patched"
 
       # ── Step 8: apply_all.sh + SuSFS config ───────────
       - run:
           name: "Apply patches + SuSFS config"
           command: |
-            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             [ -f patches/apply_all.sh ] && bash patches/apply_all.sh .
-            grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
+            grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null \
+              || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null \
+                | head -1 | grep -q . \
+                && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
       # ── Step 9: Source compat fixes (11 fixes) ────────
       - run:
           name: "Source compat fixes (11 fixes)"
           command: |
-            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             echo "=== Fix 1/11: filter.h compat_uptr_t ==="
             if [ -f "include/linux/filter.h" ]; then
@@ -181,11 +215,14 @@ jobs:
               echo "  Done"
             fi
             echo "=== Fix 2/11: hugetlbpage.c ptep ==="
-            [ -f "mm/hugetlbpage.c" ] && { sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c; echo "  Done"; }
+            [ -f "mm/hugetlbpage.c" ] \
+              && { sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c; echo "  Done"; }
             echo "=== Fix 3/11: huge_memory.c try_to_unmap ==="
-            [ -f "mm/huge_memory.c" ] && { sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c; echo "  Done"; }
+            [ -f "mm/huge_memory.c" ] \
+              && { sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c; echo "  Done"; }
             echo "=== Fix 4/11: khugepaged.c nr_ptes ==="
-            [ -f "mm/khugepaged.c" ] && { sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c; echo "  Done"; }
+            [ -f "mm/khugepaged.c" ] \
+              && { sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c; echo "  Done"; }
             echo "=== Fix 5/11: sock.c compat_timeval ==="
             if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c; then
               echo '#include <linux/compat.h>' > /tmp/cg.h
@@ -237,7 +274,6 @@ jobs:
       - run:
           name: "Clean source tree"
           command: |
-            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             rm -f .config
             rm -rf include/config
@@ -247,17 +283,30 @@ jobs:
           name: "Build Infinity Kernel"
           no_output_timeout: 30m
           command: |
-            KERNEL_SRC="kernel_scr"
             cd "$KERNEL_SRC"
             make ARCH=arm64 O=out olddefconfig </dev/null 2>&1 || true
             HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
             for cfg in $HIDDEN; do
-              grep -q "^${cfg}=y" out/.config || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-              [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; }; }
-              [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; }; }
+              grep -q "^${cfg}=y" out/.config \
+                || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
+              [ -f out/include/config/auto.conf ] && {
+                grep -q "^${cfg}=y" out/include/config/auto.conf \
+                  || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; };
+              }
+              [ -f out/include/generated/autoconf.h ] && {
+                grep -q "#define ${cfg} 1" out/include/generated/autoconf.h \
+                  || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; };
+              }
             done
             touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
-            make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" KCFLAGS="-Wno-error" -j$(nproc) Image.gz-dtb dtbs 2>&1 | tee /tmp/kernel_build.log
+            make O=out ARCH=arm64 CC=clang \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+              AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+              OBJDUMP=llvm-objdump STRIP=llvm-strip \
+              HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
+              KCFLAGS="-Wno-error" -j$(nproc) Image.gz-dtb dtbs \
+              2>&1 | tee /tmp/kernel_build.log
             RET=${PIPESTATUS[0]}
             if [ "$RET" -ne 0 ]; then
               echo "=========================================="
@@ -272,17 +321,20 @@ jobs:
       - run:
           name: "Package AnyKernel3 ZIP"
           command: |
-            KERNEL_SRC="kernel_scr"
             IMG="$KERNEL_SRC/out/arch/arm64/boot/Image.gz-dtb"
-            [ ! -f "$IMG" ] && { echo "ERROR: Image.gz-dtb not found"; ls -la "$KERNEL_SRC/out/arch/arm64/boot/" 2>/dev/null; exit 1; }
+            if [ ! -f "$IMG" ]; then
+              echo "ERROR: Image.gz-dtb not found"
+              ls -la "$KERNEL_SRC/out/arch/arm64/boot/" 2>/dev/null
+              exit 1
+            fi
             echo "Image: $(du -sh "$IMG" | cut -f1)"
             cp -v "$IMG" AnyKernel3/
             cd AnyKernel3
-            zip -r9 /tmp/infinity-kernel-v1.0.56.zip *
+            zip -r9 "/tmp/infinity-kernel-${VERSION}.zip" *
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.56.zip
-          destination: infinity-kernel-v1.0.56.zip
+          path: /tmp/infinity-kernel-v1.0.58.zip
+          destination: infinity-kernel-v1.0.58.zip
 
 workflows:
   infinity_build:
