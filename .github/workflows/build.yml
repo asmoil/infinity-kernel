@@ -45,10 +45,10 @@ jobs:
       - name: Install dependencies + Neutron Clang
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+          sudo sh -c 'ln -fs /usr/share/zoneinfo/UTC /etc/localtime' || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends tzdata
-          sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev zstd gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget patchelf
+          sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool
           TC_DIR="/home/runner/tc"
           TC_TAG="17062026"
           mkdir -p "$TC_DIR"
@@ -151,7 +151,7 @@ jobs:
           touch .root_applied
           [ "$ROOT_OK" = "1" ] && echo "Root: $ROOT_SOLUTION ready" || echo "WARNING: $ROOT_SOLUTION failed"
 
-      # ── Step 4: SuSFS v2.1.0 ──────────────────────────
+      # ── Step 4: SuSFS v2.1.0 ─────��────────────────────
       - name: SuSFS v2.1.0
         run: |
           KERNEL_SRC="kernel_scr"
@@ -194,7 +194,7 @@ jobs:
           KERNEL_SRC="kernel_scr"
           cd "$KERNEL_SRC"
           PROTECTED="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
-          DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_QCOM"
+          DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_CTRL CONFIG_USB_DWC3 CONFIG_VFIO_IOMMU_TYPE1 CONFIG_HAVE_KVM CONFIG_QCOM_IOMMU"
           if [ -f "arch/arm64/configs/vendor/sm8150_defconfig" ]; then
             make ARCH=arm64 vendor/sm8150_defconfig O=out
           elif [ -f "arch/arm64/configs/sm8150_defconfig" ]; then
@@ -235,8 +235,8 @@ jobs:
           make ARCH=arm64 O=out -j1 scripts 2>&1 | tail -3 || true
           for cfg in $HIDDEN; do
             grep -q "^${cfg}=y" out/.config || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; }; }
-            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; }; }
+            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; } }
+            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; } }
           done
           touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
           echo "Config ready"
@@ -255,7 +255,7 @@ jobs:
           KERNEL_SRC="kernel_scr"
           cd "$KERNEL_SRC"
           [ -f patches/apply_all.sh ] && bash patches/apply_all.sh .
-          grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
+          grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; } }
           make ARCH=arm64 olddefconfig O=out </dev/null || true
 
       # ── Step 9: Source compat fixes (15 fixes) ────────
@@ -397,11 +397,11 @@ jobs:
           HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
           for cfg in $HIDDEN; do
             grep -q "^${cfg}=y" out/.config || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; }; }
-            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; }; }
+            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; } }
+            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; } }
           done
           touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
-          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" KCFLAGS="-Wno-error -Wno-int-conversion" -j$(nproc) Image.gz-dtb dtbs 2>&1 | tee /tmp/kernel_build.log
+          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip KCFLAGS="-Wno-error -Wno-int-conversion" -j$(nproc) 2>&1 | tee /tmp/kernel_build.log
           RET=${PIPESTATUS[0]}
           if [ "$RET" -ne 0 ]; then
             echo "=========================================="
