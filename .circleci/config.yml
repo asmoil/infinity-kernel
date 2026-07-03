@@ -185,7 +185,17 @@ jobs:
             cd "$KERNEL_SRC"
             PROTECTED="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
             DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_QCOM"
-            make ARCH=arm64 sm8150_defconfig O=out
+            if [ -f "arch/arm64/configs/vendor/sm8150_defconfig" ]; then
+              make ARCH=arm64 vendor/sm8150_defconfig O=out
+            elif [ -f "arch/arm64/configs/sm8150_defconfig" ]; then
+              make ARCH=arm64 sm8150_defconfig O=out
+            else
+              echo "ERROR: no sm8150 defconfig found!"
+              echo "Available:"
+              find arch/arm64/configs -name '*sm8150*' -o -name '*vayu*' -o -name '*bhima*' 2>/dev/null
+              ls arch/arm64/configs/ 2>/dev/null | head -20
+              exit 1
+            fi
             scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/infinity_defconfig || true
             make ARCH=arm64 olddefconfig O=out </dev/null || true
             disable_cfgs() {
