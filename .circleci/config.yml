@@ -22,6 +22,7 @@ jobs:
       TC_TAG: "17062026"
       KERNEL_SRC: "kernel_scr"
       VERSION: "v1.0.60"
+      ROOT_SOLUTION: << pipeline.parameters.root-solution >>
     steps:
       - checkout
 
@@ -416,5 +417,4 @@ jobs:
 workflows:
   infinity_build:
     jobs:
-      - build:
-          ROOT_SOLUTION: << pipeline.parameters.root-solution >>
+      - build
