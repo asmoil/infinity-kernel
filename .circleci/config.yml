@@ -169,12 +169,12 @@ jobs:
             KERNEL_SRC="kernel_scr"
             REPO_DIR="$PWD"
             cd "$KERNEL_SRC" || { echo "ERROR: $KERNEL_SRC not found"; exit 1; }
-            cp -v "$REPO_DIR/arch/arm64/configs/infinity_defconfig" "$KERNEL_SRC/arch/arm64/configs/infinity_defconfig"
-            cp -v "$REPO_DIR/include/linux/infinity_charging_control.h" "$KERNEL_SRC/include/linux/infinity_charging_control.h"
-            cp -rv "$REPO_DIR/drivers/charging" "$KERNEL_SRC/drivers/charging"
-            grep -q 'source "drivers/charging/Kconfig"' "$KERNEL_SRC/drivers/Kconfig" 2>/dev/null || echo 'source "drivers/charging/Kconfig"' >> "$KERNEL_SRC/drivers/Kconfig"
-            grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' "$KERNEL_SRC/drivers/Makefile" 2>/dev/null || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> "$KERNEL_SRC/drivers/Makefile"
-            cp -rv "$REPO_DIR/patches" "$KERNEL_SRC/patches"
+            cp -v "$REPO_DIR/arch/arm64/configs/infinity_defconfig" arch/arm64/configs/infinity_defconfig
+            cp -v "$REPO_DIR/include/linux/infinity_charging_control.h" include/linux/infinity_charging_control.h
+            cp -rv "$REPO_DIR/drivers/charging" drivers/charging
+            grep -q 'source "drivers/charging/Kconfig"' drivers/Kconfig 2>/dev/null || echo 'source "drivers/charging/Kconfig"' >> drivers/Kconfig
+            grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' drivers/Makefile 2>/dev/null || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> drivers/Makefile
+            cp -rv "$REPO_DIR/patches" patches
             echo "Files copied OK"
 
       # ── Step 6: Config (sm8150 + merge + disable + HIDDEN) ─
