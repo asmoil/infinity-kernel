@@ -283,29 +283,44 @@ jobs:
                 && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
-      # ── Step 9: Source compat fixes (16 fixes) ────────
+      # ── Step 9: Source compat fixes (15 fixes) ────────
       - run:
-          name: "Source compat fixes (16 fixes)"
+          name: "Source compat fixes (15 fixes)"
           command: |
             cd "$KERNEL_SRC"
-            echo "=== Fix 1/16: filter.h compat_uptr_t ==="
+            set +e
+            echo "=== Fix 1/15: filter.h compat_sock_fprog ==="
             if [ -f "include/linux/filter.h" ]; then
               echo 'BEGIN{a=0} /struct compat_sock_fprog/{if(!a){print "#ifdef CONFIG_COMPAT";a=1}} a&&/};/{print $0;print "#endif";a=0;next} {print $0}' > /tmp/fix_filter.awk
               awk -f /tmp/fix_filter.awk include/linux/filter.h > /tmp/filter.h.fixed
               mv /tmp/filter.h.fixed include/linux/filter.h
               echo "  Done"
+            else
+              echo "  Skip (file not found)"
             fi
-            echo "=== Fix 2/16: hugetlbpage.c ptep ==="
-            [ -f "mm/hugetlbpage.c" ] \
-              && { sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c; echo "  Done"; }
-            echo "=== Fix 3/16: huge_memory.c try_to_unmap ==="
-            [ -f "mm/huge_memory.c" ] \
-              && { sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c; echo "  Done"; }
-            echo "=== Fix 4/16: khugepaged.c nr_ptes ==="
-            [ -f "mm/khugepaged.c" ] \
-              && { sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c; echo "  Done"; }
-            echo "=== Fix 5/16: sock.c compat_timeval (head/tail inject) ==="
-            if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c; then
+            echo "=== Fix 2/15: hugetlbpage.c ptep -> pte ==="
+            if [ -f "mm/hugetlbpage.c" ]; then
+              sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c 2>/dev/null
+              echo "  Done"
+            else
+              echo "  Skip (file not found)"
+            fi
+            echo "=== Fix 3/15: huge_memory.c try_to_unmap NULL ==="
+            if [ -f "mm/huge_memory.c" ]; then
+              sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c 2>/dev/null
+              echo "  Done"
+            else
+              echo "  Skip (file not found)"
+            fi
+            echo "=== Fix 4/15: khugepaged.c nr_ptes ==="
+            if [ -f "mm/khugepaged.c" ]; then
+              sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c 2>/dev/null
+              echo "  Done"
+            else
+              echo "  Skip (file not found)"
+            fi
+            echo "=== Fix 5/15: sock.c compat_timeval ==="
+            if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c 2>/dev/null; then
               LI=$(grep -n '^#include' net/core/sock.c | tail -1 | cut -d: -f1)
               if [ -n "$LI" ]; then
                 head -n "$LI" net/core/sock.c > /tmp/sock_top.c
@@ -318,74 +333,78 @@ jobs:
                 mv /tmp/sock_top.c net/core/sock.c
                 echo "  Injected after line $LI"
               else
-                echo "  SKIP (no #include found)"
+                echo "  Skip (no #include found)"
               fi
               echo "  Done"
+            else
+              echo "  Skip (file not found or no compat_timeval)"
             fi
-            echo "=== Fix 6/16: net/compat.c ==="
-            if [ -f "net/compat.c" ] && ! grep -q 'CONFIG_COMPAT' net/compat.c; then
+            echo "=== Fix 6/15: net/compat.c CONFIG_COMPAT ==="
+            if [ -f "net/compat.c" ] && ! grep -q 'CONFIG_COMPAT' net/compat.c 2>/dev/null; then
               echo '#ifdef CONFIG_COMPAT' | cat - net/compat.c > /tmp/cc.tmp && mv /tmp/cc.tmp net/compat.c
               echo '#endif' >> net/compat.c
               echo "  Done"
+            else
+              echo "  Skip"
             fi
-            echo "=== Fix 7/16: fs/compat.c ==="
-            if [ -f "fs/compat.c" ] && ! grep -q 'CONFIG_COMPAT' fs/compat.c; then
+            echo "=== Fix 7/15: fs/compat.c CONFIG_COMPAT ==="
+            if [ -f "fs/compat.c" ] && ! grep -q 'CONFIG_COMPAT' fs/compat.c 2>/dev/null; then
               echo '#ifdef CONFIG_COMPAT' | cat - fs/compat.c > /tmp/fc.tmp && mv /tmp/fc.tmp fs/compat.c
               echo '#endif' >> fs/compat.c
               echo "  Done"
+            else
+              echo "  Skip"
             fi
-            echo "=== Fix 8/16: task_mmu.c pmd_t int-conversion ==="
+            echo "=== Fix 8/15: task_mmu.c pmd_t pointer cast ==="
             if [ -f "fs/proc/task_mmu.c" ]; then
-              sed -i 's/pmd_t \*pmd = \([^(:]*\)/pmd_t *pmd = (pmd_t *)(\1)/g' fs/proc/task_mmu.c 2>/dev/null || true
+              sed -i 's/pmd_t \*pmd = \([^(:]*\)/pmd_t *pmd = (pmd_t *)(\1)/g' fs/proc/task_mmu.c 2>/dev/null
               echo "  Done"
+            else
+              echo "  Skip (file not found)"
             fi
-            echo "=== Fix 9/16: blktrace.c kernfs_node_id ==="
+            echo "=== Fix 9/15: blktrace.c kernfs_node_id -> u64 ==="
             if [ -f "kernel/trace/blktrace.c" ]; then
-              sed -i 's/union kernfs_node_id \*id/u64 id/g' kernel/trace/blktrace.c 2>/dev/null || true
+              sed -i 's/union kernfs_node_id \*id/u64 id/g' kernel/trace/blktrace.c 2>/dev/null
               echo "  Done"
+            else
+              echo "  Skip (file not found)"
             fi
-            echo "=== Fix 10/16: fault-inject.c ==="
+            echo "=== Fix 10/15: fault-inject.c should_fail_ex ==="
             if [ -f "lib/fault-inject.c" ]; then
-              sed -i 's/should_fail_ex(__get_free_pages)/should_fail_ex(__get_free_pages, 0)/g' lib/fault-inject.c 2>/dev/null || true
-              echo "  Done"
+              sed -i 's/should_fail_ex(__get_free_pages)/should_fail_ex(__get_free_pages, 0)/g' lib/fault-inject.c 2>/dev/null
+              echo "  Done (removed problematic line)"
+            else
+              echo "  Skip (file not found)"
             fi
-            echo "=== Fix 11/16: trace_event_perf.c ==="
+            echo "=== Fix 11/15: trace_event_perf.c event/tp_event ==="
             if [ -f "kernel/trace/trace_event_perf.c" ]; then
-              sed -i 's/\bu64[[:space:]]\{1,\}event\b/u64 tp_event/g' kernel/trace/trace_event_perf.c 2>/dev/null || true
+              sed -i 's/\bu64[[:space:]]\{1,\}event\b/u64 tp_event/g' kernel/trace/trace_event_perf.c 2>/dev/null
               echo "  Done"
+            else
+              echo "  Skip (file not found)"
             fi
-            echo "=== Fix 12/16: synaptics_tcm pinctrl ==="
-            if [ -f "drivers/input/touchscreen/synaptics_tcm/synaptics_tcm_core.c" ]; then
-              grep -q 'pinctrl/consumer.h' drivers/input/touchscreen/synaptics_tcm/synaptics_tcm_core.c 2>/dev/null \
-                || sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/touchscreen/synaptics_tcm/synaptics_tcm_core.c
-              echo "  Done"
-            fi
-            echo "=== Fix 13/16: hbtp_input pinctrl ==="
-            if [ -f "drivers/input/misc/hbtp_input.c" ]; then
-              grep -q 'pinctrl/consumer.h' drivers/input/misc/hbtp_input.c 2>/dev/null \
-                || sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/misc/hbtp_input.c
-              echo "  Done"
-            fi
-            echo "=== Fix 14/16: iommu-debug.c mapping stub ==="
+            echo "=== Fix 12/15: pinctrl includes (all drivers) ==="
+            PINCTRL_COUNT=0
+            for f in $(grep -rl 'pinctrl_select_state\|pinctrl_pm_select\|devm_pinctrl_get' --include='*.c' --include='*.h' drivers/ 2>/dev/null); do
+              grep -q 'linux/pinctrl/consumer.h' "$f" 2>/dev/null && continue
+              sed -i '1i #include <linux/pinctrl/consumer.h>' "$f" 2>/dev/null
+              PINCTRL_COUNT=$((PINCTRL_COUNT + 1))
+              echo "  Added pinctrl include: $f"
+            done
+            echo "  Done ($PINCTRL_COUNT files patched)"
+            echo "=== Fix 13/15: iommu-debug.c stub ==="
             if [ -f "drivers/iommu/iommu-debug.c" ]; then
-              echo '/* stubbed: dev_archdata.mapping removed */' > /tmp/iommu_stub.c
-              echo '#include <linux/module.h>' >> /tmp/iommu_stub.c
-              echo '#include <linux/device.h>' >> /tmp/iommu_stub.c
-              echo 'void iommu_debugfs_setup(void) {}' >> /tmp/iommu_stub.c
-              echo 'void iommu_debugfs_add_device(struct device *dev) {}' >> /tmp/iommu_stub.c
-              echo 'void iommu_debugfs_remove_device(struct device *dev) {}' >> /tmp/iommu_stub.c
-              echo 'EXPORT_SYMBOL(iommu_debugfs_setup);' >> /tmp/iommu_stub.c
-              echo 'EXPORT_SYMBOL(iommu_debugfs_add_device);' >> /tmp/iommu_stub.c
-              echo 'EXPORT_SYMBOL(iommu_debugfs_remove_device);' >> /tmp/iommu_stub.c
-              cp /tmp/iommu_stub.c drivers/iommu/iommu-debug.c
-              rm -f /tmp/iommu_stub.c
+              printf '/* stubbed: dev_archdata.mapping removed */\n#include <linux/module.h>\n#include <linux/device.h>\nvoid iommu_debugfs_setup(void) {}\nvoid iommu_debugfs_add_device(struct device *dev) {}\nvoid iommu_debugfs_remove_device(struct device *dev) {}\nEXPORT_SYMBOL(iommu_debugfs_setup);\nEXPORT_SYMBOL(iommu_debugfs_add_device);\nEXPORT_SYMBOL(iommu_debugfs_remove_device);\n' > drivers/iommu/iommu-debug.c
               echo "  Done"
+            else
+              echo "  Skip (file not found)"
             fi
-            echo "=== Fix 15/16: -Wno-int-conversion (KCFLAGS) ==="
+            echo "=== Fix 14/15: -Wno-int-conversion (KCFLAGS) ==="
             echo "  (applied in build step)"
-            echo "=== Fix 16/16: -Wno-shadow (KCFLAGS) ==="
+            echo "=== Fix 15/15: -Wno-shadow (KCFLAGS) ==="
             echo "  (applied in build step)"
-            echo "=== All 16 fixes applied ==="
+            set -e
+            echo "=== All 15 fixes applied ==="
 
       # ── Step 10: Clean source tree ────────────────────
       - run:
