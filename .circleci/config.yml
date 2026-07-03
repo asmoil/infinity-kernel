@@ -34,6 +34,7 @@ jobs:
             curl -sL "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${TC_TAG}/neutron-clang-${TC_TAG}.tar.zst" -o /tmp/neutron.tar.zst
             tar -xf /tmp/neutron.tar.zst -C "$TC_DIR" --strip-components=1
             rm -f /tmp/neutron.tar.zst
+            export PATH="${TC_DIR}/bin:$PATH"
             echo "export PATH=${TC_DIR}/bin:\$PATH" >> "$BASH_ENV"
             clang --version 2>&1 | head -1
 
