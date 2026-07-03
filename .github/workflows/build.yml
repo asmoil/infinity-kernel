@@ -30,6 +30,7 @@ env:
   KERNEL_SRC: kernel_scr
   VERSION: v1.0.60
   ROOT_SOLUTION: ${{ github.event.inputs.root_solution || 'kernelsu-next' }}
+  TZ: UTC
 
 jobs:
   build:
@@ -45,7 +46,7 @@ jobs:
       - name: Install dependencies + Neutron Clang
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo sh -c 'ln -fs /usr/share/zoneinfo/UTC /etc/localtime' || true
+          export TZ=UTC
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends tzdata
           sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool
@@ -151,7 +152,7 @@ jobs:
           touch .root_applied
           [ "$ROOT_OK" = "1" ] && echo "Root: $ROOT_SOLUTION ready" || echo "WARNING: $ROOT_SOLUTION failed"
 
-      # ── Step 4: SuSFS v2.1.0 ─────��────────────────────
+      # ── Step 4: SuSFS v2.1.0 ──────────────────────────
       - name: SuSFS v2.1.0
         run: |
           KERNEL_SRC="kernel_scr"
@@ -249,7 +250,7 @@ jobs:
           [ -f "$KERNEL_SRC/scripts/sign-file.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/scripts/sign-file.c"
           echo "OpenSSL patched"
 
-      # ── Step 8: apply_all.sh + SuSFS config ───────────
+      # ── Step 8: apply_all.sh + SuSFS config ��──────────
       - name: Apply patches + SuSFS config
         run: |
           KERNEL_SRC="kernel_scr"
@@ -393,6 +394,7 @@ jobs:
           KERNEL_SRC="kernel_scr"
           cd "$KERNEL_SRC"
           export PATH="$TC_DIR/bin:$PATH"
+          export TZ=UTC
           make ARCH=arm64 O=out olddefconfig </dev/null 2>&1 || true
           HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
           for cfg in $HIDDEN; do
