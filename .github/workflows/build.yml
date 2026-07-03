@@ -233,7 +233,6 @@ jobs:
           done
           make ARCH=arm64 olddefconfig O=out </dev/null || true
           HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
-          make ARCH=arm64 O=out -j1 scripts 2>&1 | tail -3 || true
           for cfg in $HIDDEN; do
             grep -q "^${cfg}=y" out/.config || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
             [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; } }
@@ -250,7 +249,7 @@ jobs:
           [ -f "$KERNEL_SRC/scripts/sign-file.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/scripts/sign-file.c"
           echo "OpenSSL patched"
 
-      # ── Step 8: apply_all.sh + SuSFS config ��──────────
+      # ── Step 8: apply_all.sh + SuSFS config ──────────
       - name: Apply patches + SuSFS config
         run: |
           KERNEL_SRC="kernel_scr"
@@ -357,18 +356,20 @@ jobs:
           echo "=== Fix 13/15: iommu-debug.c stub ==="
           IOMMU_DBG=$(find . -name "iommu-debug.c" -type f 2>/dev/null | head -1)
           if [ -n "$IOMMU_DBG" ]; then
-            EXPS=$(grep -oP 'EXPORT_SYMBOL[_GS]?\(\K[^)]+' "$IOMMU_DBG" 2>/dev/null)
-            STUB=$(mktemp)
-            printf '/* iommu-debug.c stubbed - dev_archdata.mapping removed */\n' > "$STUB"
-            printf '#include <linux/module.h>\n' >> "$STUB"
-            printf '#include <linux/device.h>\n\n' >> "$STUB"
-            for FN in $EXPS; do
-              printf 'void %s(void) { }\n' "$FN" >> "$STUB"
-              printf 'EXPORT_SYMBOL(%s);\n\n' "$FN" >> "$STUB"
-            done
-            cp "$STUB" "$IOMMU_DBG"
-            rm -f "$STUB"
-            echo "  Stubbed: $IOMMU_DBG"
+            EXPS=$(grep -oP 'EXPORT_SYMBOL[_GS]?\(\K[^)]+' "$IOMMU_DBG" 2>/dev/null) || true
+            if [ -n "$EXPS" ]; then
+              STUB=$(mktemp)
+              printf '/* iommu-debug.c stubbed - dev_archdata.mapping removed */\n' > "$STUB"
+              printf '#include <linux/module.h>\n' >> "$STUB"
+              printf '#include <linux/device.h>\n\n' >> "$STUB"
+              for FN in $EXPS; do
+                printf 'void %s(void) { }\n' "$FN" >> "$STUB"
+                printf 'EXPORT_SYMBOL(%s);\n\n' "$FN" >> "$STUB"
+              done
+              cp "$STUB" "$IOMMU_DBG"
+              rm -f "$STUB"
+              echo "  Stubbed: $IOMMU_DBG"
+            fi
           fi
 
           echo "=== Fix 14/15: -Wno-error (build step) ==="
