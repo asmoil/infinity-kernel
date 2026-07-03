@@ -30,6 +30,10 @@ env:
   KERNEL_SRC: kernel_scr
   VERSION: v1.0.60
   ROOT_SOLUTION: ${{ github.event.inputs.root_solution || 'kernelsu-next' }}
+<<<<<<< HEAD
+=======
+  TZ: UTC
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
 
 jobs:
   build:
@@ -45,10 +49,17 @@ jobs:
       - name: Install dependencies + Neutron Clang
         run: |
           export DEBIAN_FRONTEND=noninteractive
+<<<<<<< HEAD
           ln -fs /usr/share/zoneinfo/UTC /etc/localtime
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends tzdata
           sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev zstd gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget patchelf
+=======
+          export TZ=UTC
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tzdata
+          sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
           TC_DIR="/home/runner/tc"
           TC_TAG="17062026"
           mkdir -p "$TC_DIR"
@@ -194,7 +205,11 @@ jobs:
           KERNEL_SRC="kernel_scr"
           cd "$KERNEL_SRC"
           PROTECTED="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
+<<<<<<< HEAD
           DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_QCOM"
+=======
+          DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_CTRL CONFIG_USB_DWC3 CONFIG_VFIO_IOMMU_TYPE1 CONFIG_HAVE_KVM CONFIG_QCOM_IOMMU"
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
           if [ -f "arch/arm64/configs/vendor/sm8150_defconfig" ]; then
             make ARCH=arm64 vendor/sm8150_defconfig O=out
           elif [ -f "arch/arm64/configs/sm8150_defconfig" ]; then
@@ -232,11 +247,10 @@ jobs:
           done
           make ARCH=arm64 olddefconfig O=out </dev/null || true
           HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
-          make ARCH=arm64 O=out -j1 scripts 2>&1 | tail -3 || true
           for cfg in $HIDDEN; do
             grep -q "^${cfg}=y" out/.config || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; }; }
-            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; }; }
+            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; } }
+            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; } }
           done
           touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
           echo "Config ready"
@@ -249,13 +263,17 @@ jobs:
           [ -f "$KERNEL_SRC/scripts/sign-file.c" ] && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' "$KERNEL_SRC/scripts/sign-file.c"
           echo "OpenSSL patched"
 
+<<<<<<< HEAD
       # ── Step 8: apply_all.sh + SuSFS config ───────────
+=======
+      # ── Step 8: apply_all.sh + SuSFS config ──────────
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
       - name: Apply patches + SuSFS config
         run: |
           KERNEL_SRC="kernel_scr"
           cd "$KERNEL_SRC"
           [ -f patches/apply_all.sh ] && bash patches/apply_all.sh .
-          grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
+          grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null | head -1 | grep -q . && { echo "CONFIG_SUFS_FS=y" >> out/.config; } }
           make ARCH=arm64 olddefconfig O=out </dev/null || true
 
       # ── Step 9: Source compat fixes (15 fixes) ────────
@@ -356,6 +374,7 @@ jobs:
           echo "=== Fix 13/15: iommu-debug.c stub ==="
           IOMMU_DBG=$(find . -name "iommu-debug.c" -type f 2>/dev/null | head -1)
           if [ -n "$IOMMU_DBG" ]; then
+<<<<<<< HEAD
             EXPS=$(grep -oP 'EXPORT_SYMBOL[_GS]?\(\K[^)]+' "$IOMMU_DBG" 2>/dev/null)
             STUB=$(mktemp)
             printf '/* iommu-debug.c stubbed - dev_archdata.mapping removed */\n' > "$STUB"
@@ -368,6 +387,22 @@ jobs:
             cp "$STUB" "$IOMMU_DBG"
             rm -f "$STUB"
             echo "  Stubbed: $IOMMU_DBG"
+=======
+            EXPS=$(grep -oP 'EXPORT_SYMBOL[_GS]?\(\K[^)]+' "$IOMMU_DBG" 2>/dev/null) || true
+            if [ -n "$EXPS" ]; then
+              STUB=$(mktemp)
+              printf '/* iommu-debug.c stubbed - dev_archdata.mapping removed */\n' > "$STUB"
+              printf '#include <linux/module.h>\n' >> "$STUB"
+              printf '#include <linux/device.h>\n\n' >> "$STUB"
+              for FN in $EXPS; do
+                printf 'void %s(void) { }\n' "$FN" >> "$STUB"
+                printf 'EXPORT_SYMBOL(%s);\n\n' "$FN" >> "$STUB"
+              done
+              cp "$STUB" "$IOMMU_DBG"
+              rm -f "$STUB"
+              echo "  Stubbed: $IOMMU_DBG"
+            fi
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
           fi
 
           echo "=== Fix 14/15: -Wno-error (build step) ==="
@@ -393,15 +428,23 @@ jobs:
           KERNEL_SRC="kernel_scr"
           cd "$KERNEL_SRC"
           export PATH="$TC_DIR/bin:$PATH"
+<<<<<<< HEAD
+=======
+          export TZ=UTC
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
           make ARCH=arm64 O=out olddefconfig </dev/null 2>&1 || true
           HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
           for cfg in $HIDDEN; do
             grep -q "^${cfg}=y" out/.config || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; }; }
-            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; }; }
+            [ -f out/include/config/auto.conf ] && { grep -q "^${cfg}=y" out/include/config/auto.conf || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; } }
+            [ -f out/include/generated/autoconf.h ] && { grep -q "#define ${cfg} 1" out/include/generated/autoconf.h || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; } }
           done
           touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
+<<<<<<< HEAD
           make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" KCFLAGS="-Wno-error -Wno-int-conversion" -j$(nproc) Image.gz-dtb dtbs 2>&1 | tee /tmp/kernel_build.log
+=======
+          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip KCFLAGS="-Wno-error -Wno-int-conversion" -j$(nproc) 2>&1 | tee /tmp/kernel_build.log
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
           RET=${PIPESTATUS[0]}
           if [ "$RET" -ne 0 ]; then
             echo "=========================================="
@@ -433,4 +476,8 @@ jobs:
           name: infinity-kernel-v1.0.60
           path: /tmp/infinity-kernel-v1.0.60.zip
           retention-days: 30
+<<<<<<< HEAD
           if-no-files-found: error
+=======
+          if-no-files-found: error
+>>>>>>> 019420127edda21d6ee315ea6c48ff7dc69fa8cc
