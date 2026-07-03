@@ -14,7 +14,7 @@ jobs:
       KERNEL_SRC: "kernel_scr"
       TC_DIR: "/root/tc"
       TC_TAG: "17062026"
-      VERSION: "v1.0.59"
+      VERSION: "v1.0.60"
     steps:
       - checkout
 
@@ -203,77 +203,90 @@ jobs:
                 && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
             make ARCH=arm64 olddefconfig O=out </dev/null || true
 
-      # ── Step 9: Source compat fixes (15 fixes) ────────
+      # ── Step 9: Source compat fixes (16 fixes) ────────
       - run:
-          name: "Source compat fixes (15 fixes)"
+          name: "Source compat fixes (16 fixes)"
           command: |
             cd "$KERNEL_SRC"
-            echo "=== Fix 1/15: filter.h compat_uptr_t ==="
+            echo "=== Fix 1/16: filter.h compat_uptr_t ==="
             if [ -f "include/linux/filter.h" ]; then
               echo 'BEGIN{a=0} /struct compat_sock_fprog/{if(!a){print "#ifdef CONFIG_COMPAT";a=1}} a&&/};/{print $0;print "#endif";a=0;next} {print $0}' > /tmp/fix_filter.awk
               awk -f /tmp/fix_filter.awk include/linux/filter.h > /tmp/filter.h.fixed
               mv /tmp/filter.h.fixed include/linux/filter.h
               echo "  Done"
             fi
-            echo "=== Fix 2/15: hugetlbpage.c ptep ==="
+            echo "=== Fix 2/16: hugetlbpage.c ptep ==="
             [ -f "mm/hugetlbpage.c" ] \
               && { sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c; echo "  Done"; }
-            echo "=== Fix 3/15: huge_memory.c try_to_unmap ==="
+            echo "=== Fix 3/16: huge_memory.c try_to_unmap ==="
             [ -f "mm/huge_memory.c" ] \
               && { sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c; echo "  Done"; }
-            echo "=== Fix 4/15: khugepaged.c nr_ptes ==="
+            echo "=== Fix 4/16: khugepaged.c nr_ptes ==="
             [ -f "mm/khugepaged.c" ] \
               && { sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c; echo "  Done"; }
-            echo "=== Fix 5/15: sock.c compat_timeval ==="
+            echo "=== Fix 5/16: sock.c compat_timeval (head/tail inject) ==="
             if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c; then
-              echo '#ifndef COMPAT_USE_64BIT_TIME' > /tmp/cg.h
-              echo '#define COMPAT_USE_64BIT_TIME 0' >> /tmp/cg.h
-              echo '#endif' >> /tmp/cg.h
-              echo 'struct compat_timeval { s32 tv_sec; s32 tv_usec; };' >> /tmp/cg.h
               LI=$(grep -n '^#include' net/core/sock.c | tail -1 | cut -d: -f1)
-              [ -n "$LI" ] && sed -i "${LI}r /tmp/cg.h" net/core/sock.c
-              rm -f /tmp/cg.h
+              if [ -n "$LI" ]; then
+                head -n "$LI" net/core/sock.c > /tmp/sock_top.c
+                echo '' >> /tmp/sock_top.c
+                echo '#ifndef COMPAT_USE_64BIT_TIME' >> /tmp/sock_top.c
+                echo '#define COMPAT_USE_64BIT_TIME 0' >> /tmp/sock_top.c
+                echo '#endif' >> /tmp/sock_top.c
+                echo 'struct compat_timeval { int tv_sec; int tv_usec; };' >> /tmp/sock_top.c
+                tail -n +"$((LI + 1))" net/core/sock.c >> /tmp/sock_top.c
+                mv /tmp/sock_top.c net/core/sock.c
+                echo "  Injected after line $LI"
+              else
+                echo "  SKIP (no #include found)"
+              fi
               echo "  Done"
             fi
-            echo "=== Fix 6/15: net/compat.c ==="
+            echo "=== Fix 6/16: net/compat.c ==="
             if [ -f "net/compat.c" ] && ! grep -q 'CONFIG_COMPAT' net/compat.c; then
               echo '#ifdef CONFIG_COMPAT' | cat - net/compat.c > /tmp/cc.tmp && mv /tmp/cc.tmp net/compat.c
               echo '#endif' >> net/compat.c
               echo "  Done"
             fi
-            echo "=== Fix 7/15: fs/compat.c ==="
+            echo "=== Fix 7/16: fs/compat.c ==="
             if [ -f "fs/compat.c" ] && ! grep -q 'CONFIG_COMPAT' fs/compat.c; then
               echo '#ifdef CONFIG_COMPAT' | cat - fs/compat.c > /tmp/fc.tmp && mv /tmp/fc.tmp fs/compat.c
               echo '#endif' >> fs/compat.c
               echo "  Done"
             fi
-            echo "=== Fix 8/15: task_mmu.c pmd_t int-conversion ==="
+            echo "=== Fix 8/16: task_mmu.c pmd_t int-conversion ==="
             if [ -f "fs/proc/task_mmu.c" ]; then
               sed -i 's/pmd_t \*pmd = \([^(:]*\)/pmd_t *pmd = (pmd_t *)(\1)/g' fs/proc/task_mmu.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== Fix 9/15: blktrace.c kernfs_node_id ==="
+            echo "=== Fix 9/16: blktrace.c kernfs_node_id ==="
             if [ -f "kernel/trace/blktrace.c" ]; then
               sed -i 's/union kernfs_node_id \*id/u64 id/g' kernel/trace/blktrace.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== Fix 10/15: fault-inject.c ==="
+            echo "=== Fix 10/16: fault-inject.c ==="
             if [ -f "lib/fault-inject.c" ]; then
-              sed -i 's/should_fail_ex(__get_free_pages/should_fail_ex(__get_free_pages,/' lib/fault-inject.c 2>/dev/null || true
+              sed -i 's/should_fail_ex(__get_free_pages)/should_fail_ex(__get_free_pages, 0)/g' lib/fault-inject.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== Fix 11/15: trace_event_perf.c ==="
+            echo "=== Fix 11/16: trace_event_perf.c ==="
             if [ -f "kernel/trace/trace_event_perf.c" ]; then
-              sed -i 's/u64 event/u64 tp_event/' kernel/trace/trace_event_perf.c 2>/dev/null || true
+              sed -i 's/\bu64[[:space:]]\{1,\}event\b/u64 tp_event/g' kernel/trace/trace_event_perf.c 2>/dev/null || true
               echo "  Done"
             fi
-            echo "=== Fix 12/15: synaptics_tcm pinctrl ==="
+            echo "=== Fix 12/16: synaptics_tcm pinctrl ==="
             if [ -f "drivers/input/touchscreen/synaptics_tcm/synaptics_tcm_core.c" ]; then
               grep -q 'pinctrl/consumer.h' drivers/input/touchscreen/synaptics_tcm/synaptics_tcm_core.c 2>/dev/null \
                 || sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/touchscreen/synaptics_tcm/synaptics_tcm_core.c
               echo "  Done"
             fi
-            echo "=== Fix 13/15: iommu-debug.c mapping stub ==="
+            echo "=== Fix 13/16: hbtp_input pinctrl ==="
+            if [ -f "drivers/input/misc/hbtp_input.c" ]; then
+              grep -q 'pinctrl/consumer.h' drivers/input/misc/hbtp_input.c 2>/dev/null \
+                || sed -i '1i #include <linux/pinctrl/consumer.h>' drivers/input/misc/hbtp_input.c
+              echo "  Done"
+            fi
+            echo "=== Fix 14/16: iommu-debug.c mapping stub ==="
             if [ -f "drivers/iommu/iommu-debug.c" ]; then
               echo '/* stubbed: dev_archdata.mapping removed */' > /tmp/iommu_stub.c
               echo '#include <linux/module.h>' >> /tmp/iommu_stub.c
@@ -288,11 +301,11 @@ jobs:
               rm -f /tmp/iommu_stub.c
               echo "  Done"
             fi
-            echo "=== Fix 14/15: -Wno-int-conversion (KCFLAGS) ==="
+            echo "=== Fix 15/16: -Wno-int-conversion (KCFLAGS) ==="
             echo "  (applied in build step)"
-            echo "=== Fix 15/15: -Wno-int-conversion (KCFLAGS) ==="
+            echo "=== Fix 16/16: -Wno-shadow (KCFLAGS) ==="
             echo "  (applied in build step)"
-            echo "=== All 15 fixes applied ==="
+            echo "=== All 16 fixes applied ==="
 
       # ── Step 10: Clean source tree ────────────────────
       - run:
@@ -329,7 +342,7 @@ jobs:
               AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump STRIP=llvm-strip \
               HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
-              KCFLAGS="-Wno-error -Wno-int-conversion" -j$(nproc) Image.gz-dtb dtbs \
+              KCFLAGS="-Wno-error -Wno-int-conversion -Wno-shadow" -j$(nproc) Image.gz-dtb dtbs \
               2>&1 | tee /tmp/kernel_build.log
             RET=${PIPESTATUS[0]}
             if [ "$RET" -ne 0 ]; then
@@ -357,8 +370,8 @@ jobs:
             zip -r9 "/tmp/infinity-kernel-${VERSION}.zip" *
 
       - store_artifacts:
-          path: /tmp/infinity-kernel-v1.0.59.zip
-          destination: infinity-kernel-v1.0.59.zip
+          path: /tmp/infinity-kernel-v1.0.60.zip
+          destination: infinity-kernel-v1.0.60.zip
 
 workflows:
   infinity_build:
