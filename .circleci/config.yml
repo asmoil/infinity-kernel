@@ -30,7 +30,10 @@ jobs:
       - run:
           name: "Install dependencies + Neutron Clang"
           command: |
+            export DEBIAN_FRONTEND=noninteractive
+            ln -fs /usr/share/zoneinfo/UTC /etc/localtime
             apt-get update
+            apt-get install -y --no-install-recommends tzdata
             apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool squashfs-tools software-properties-common xsltproc zip zlib1g-dev zstd gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python-is-python3 ca-certificates lsb-release wget patchelf
             TC_DIR="/root/tc"
             TC_TAG="17062026"
