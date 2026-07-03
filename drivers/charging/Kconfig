@@ -1,13 +1,6 @@
-#
-# Infinity Charging Control Driver
-# SM8150 (Poco X3 Pro vayu/bhima)
-#
 config CHARGING_CONTROL
-    tristate "Infinity Charging Control"
-    depends on ARCH_QCOM && POWER_SUPPLY
-    default n
+    bool "Infinity Charging Control"
+    default y
     help
-      Custom charging control driver for Poco X3 Pro (vayu/bhima).
-      Provides 5 charging modes: OFF, ON, PAUSE, LIMIT, BYPASS.
-      Controlled via sysfs and IOCTL interface.
-      Say Y if you want custom charging control.
+      Battery charging control for Poco X3 Pro.
+      Modes: OFF, ON, PAUSE, LIMIT, BYPASS.
