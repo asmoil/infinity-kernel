@@ -22,7 +22,8 @@ Infinity Kernel — это оптимизированное ядро для Poco
 
 ```
 .
-├── .github/workflows/build.yml   # CI: GitHub Actions (Neutron Clang)
+├── .circleci/
+│   └── config.yml                # CI: CircleCI (ubuntu:24.04, Neutron Clang)
 ├── .gitignore
 ├── arch/arm64/configs/
 │   └── infinity_defconfig        # Конфигурация ядра
@@ -46,7 +47,7 @@ Infinity Kernel — это оптимизированное ядро для Poco
 
 ## Сборка
 
-Сборка полностью автоматизирована через **GitHub Actions**. При пуше в `main` или `master` запускается CI, который:
+Сборка полностью автоматизирована через **CircleCI** (ubuntu:24.04, glibc 2.39). При пуше в репозиторий запускается CI, который:
 
 1. Скачивает **Neutron Clang** (tag `17062026`)
 2. Получает исходники ядра из `kernel_scr/` или клонирует [LineageOS sm8150](https://github.com/LineageOS/android_kernel_qcom_sm8150)
@@ -66,27 +67,26 @@ cd infinity-kernel
 git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150 kernel_scr
 
 # Скачать Neutron Clang
-mkdir -p $HOME/toolchains/neutron-clang
-curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/17062026" \
-  | grep -o '"browser_download_url": *"[^"]*x86_64[^"]*\.tar\.zst"' | head -1 | cut -d'"' -f4 \
-  | xargs curl -L -o /tmp/neutron.tar.zst
-tar -I zstd -xf /tmp/neutron.tar.zst -C $HOME/toolchains/neutron-clang --strip-components=1
+mkdir -p $HOME/tc
+curl -sL "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/17062026/neutron-clang-17062026.tar.zst" -o /tmp/neutron.tar.zst
+tar -xf /tmp/neutron.tar.zst -C $HOME/tc --strip-components=1
 
-# Установить зависимости (Ubuntu 22.04)
+# Установить зависимости (Ubuntu 24.04)
 sudo apt-get install -y bc bison build-essential flex git libelf-dev liblz4-tool \
-  libncurses5-dev libssl-dev libxml2 libxml2-utils lzop rsync schedtool \
+  libncurses-dev libssl-dev libxml2-utils lzop rsync schedtool \
   squashfs-tools xsltproc zip zlib1g-dev gcc-aarch64-linux-gnu \
   binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi zstd
 
 # Собрать
-export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
+export PATH="$HOME/tc/bin:$PATH"
 export KERNEL_SRC="kernel_scr"
 
 # Скопировать файлы ядра
-cp -rv arch/arm64/configs/infinity_defconfig "$KERNEL_SRC/arch/arm64/configs/"
-cp -rv include/linux/infinity_charging_control.h "$KERNEL_SRC/include/linux/"
-cp -rv drivers/charging "$KERNEL_SRC/drivers/"
-cp -rv patches "$KERNEL_SRC/patches"
+REPO_DIR="$PWD"
+cp -v "$REPO_DIR/arch/arm64/configs/infinity_defconfig" "$KERNEL_SRC/arch/arm64/configs/"
+cp -v "$REPO_DIR/include/linux/infinity_charging_control.h" "$KERNEL_SRC/include/linux/"
+cp -rv "$REPO_DIR/drivers/charging" "$KERNEL_SRC/drivers/"
+cp -rv "$REPO_DIR/patches" "$KERNEL_SRC/patches"
 
 # Конфигурация и сборка
 cd "$KERNEL_SRC"
@@ -103,7 +103,7 @@ make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- \
 
 ## Установка
 
-1. Скачать `infinity-kernel-v1.0.56.zip` из **Actions** (вкладка на GitHub)
+1. Скачать `infinity-kernel-v1.0.58.zip` из **CircleCI Artifacts**
 2. Перенести на телефон
 3. Загрузиться в recovery (TWRP / OrangeFox)
 4. Установить ZIP
@@ -159,7 +159,7 @@ echo "80" > /sys/class/power_supply/battery/charge_ctrl_limit
 | Root | KernelSU-Next v3.2.0 |
 | Стелс | SuSFS v2.1.0 |
 | Установщик | AnyKernel3 |
-| CI | GitHub Actions |
+| CI | CircleCI (ubuntu:24.04) |
 
 ## Лицензия
 
