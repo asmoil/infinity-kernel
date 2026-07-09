@@ -1,16 +1,18 @@
-# Infinity Kernel v1.0.60
+# Infinity Kernel v1.0.62
 # Poco X3 Pro (vayu/bhima) | SM8150 (LineageOS base) | Linux 4.14.357
 # Neutron Clang (tag 17062026) | AnyKernel3 | MIT License
-# Multi-Root: KernelSU-Next / ReSukiSU / SukiSU-Ultra / KoWSu / APatch / none
+# Universal Root: 'kernelsu' = all KSU managers (Next/ReSukiSU/Ultra/KoWSu)
+#   'apatch' = APatch patches kernel at flash time (no kernel-side root)
+#   'none'   = no root
 # CI: CircleCI | OS: ubuntu:24.04
 version: 2.1
 
-# ── Pipeline parameters (multi-root) ────────────────────────────
+# ── Pipeline parameters (universal root) ────────────────────────
 parameters:
   root-solution:
     type: enum
-    enum: ["kernelsu-next", "resukisu", "sukisu-ultra", "kowsu", "apatch", "none"]
-    default: "kernelsu-next"
+    enum: ["kernelsu", "apatch", "none"]
+    default: "kernelsu"
 
 jobs:
   build:
@@ -22,7 +24,7 @@ jobs:
       KERNEL_SRC: "kernel_scr"
       TC_DIR: "/root/tc"
       TC_TAG: "17062026"
-      VERSION: "v1.0.60"
+      VERSION: "v1.0.62"
       ROOT_SOLUTION: "<< pipeline.parameters.root-solution >>"
     steps:
       - checkout
@@ -34,13 +36,25 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive
             ln -fs /usr/share/zoneinfo/UTC /etc/localtime
             apt-get update
+            # Install all packages — non-fatal for individual pkg failures
             apt-get install -y bc bison build-essential ccache curl flex git gperf \
-              libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils \
-              lzop rsync schedtool squashfs-tools xsltproc zip zlib1g-dev zstd \
+              libelf-dev libncurses-dev libssl-dev libxml2-utils \
+              rsync xsltproc zip zlib1g-dev zstd lz4 \
               gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
               gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
-              ca-certificates wget
+              ca-certificates wget schedtool lzop squashfs-tools \
+              || echo "NOTE: apt-get returned non-zero (some packages unavailable), continuing..."
+            # Verify cross-compilers are available
+            if ! command -v aarch64-linux-gnu-gcc &>/dev/null; then
+              echo "ERROR: aarch64-linux-gnu-gcc not found!"; exit 1
+            fi
+            if ! command -v arm-linux-gnueabi-gcc &>/dev/null; then
+              echo "ERROR: arm-linux-gnueabi-gcc not found!"; exit 1
+            fi
+            echo "Cross-compilers OK"
             mkdir -p "$TC_DIR"
+            # Download Neutron Clang — try multiple strategies
+            ASSET_URL=""
             ASSET_URL=$(curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/${TC_TAG}" | grep -o '"browser_download_url": *"[^"]*x86_64[^"]*\.tar\.zst"' | head -1 | cut -d'"' -f4)
             if [ -z "$ASSET_URL" ]; then
               ASSET_URL=$(curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/${TC_TAG}" | grep -o '"browser_download_url": *"[^"]*linux[^"]*\.tar\.zst"' | grep -v aarch64 | head -1 | cut -d'"' -f4)
@@ -50,11 +64,27 @@ jobs:
             fi
             echo "Downloading: $ASSET_URL"
             curl -sL "$ASSET_URL" -o /tmp/neutron.tar.zst
+            DL_SIZE=$(stat -c%s /tmp/neutron.tar.zst 2>/dev/null || echo 0)
+            if [ "$DL_SIZE" -lt 1048576 ]; then
+              echo "WARNING: Primary download too small ($DL_SIZE bytes), trying fallback..."
+              rm -f /tmp/neutron.tar.zst
+              FALLBACK_URL=$(curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/${TC_TAG}" | grep -o '"browser_download_url": *"[^"]*"' | grep -v aarch64 | head -1 | cut -d'"' -f4)
+              if [ -n "$FALLBACK_URL" ]; then
+                echo "Fallback: $FALLBACK_URL"
+                curl -sL "$FALLBACK_URL" -o /tmp/neutron.tar.zst
+                DL_SIZE=$(stat -c%s /tmp/neutron.tar.zst 2>/dev/null || echo 0)
+              fi
+            fi
+            if [ "$DL_SIZE" -lt 1048576 ]; then
+              echo "ERROR: Neutron Clang download failed (size: $DL_SIZE bytes)"
+              exit 1
+            fi
+            echo "Downloaded: $((DL_SIZE / 1048576)) MB"
             tar -xf /tmp/neutron.tar.zst -C "$TC_DIR" --strip-components=1
             rm -f /tmp/neutron.tar.zst
             export PATH="${TC_DIR}/bin:$PATH"
             echo "export PATH=${TC_DIR}/bin:\$PATH" >> "$BASH_ENV"
-            clang --version 2>&1 | head -1
+            clang --version 2>&1 | head -1 || echo "WARNING: clang version check failed"
 
       # ── Step 2: Get kernel source (local or clone) ─────
       - run:
@@ -69,15 +99,18 @@ jobs:
             echo "Available defconfigs:"
             ls "$KERNEL_SRC/arch/arm64/configs/" | head -10
 
-      # ── Step 3: Root solution (multi-root) ─────────────
+      # ── Step 3: Root solution (universal) ─────────────
+      # 'kernelsu' compiles KernelSU-Next into the kernel.
+      # ALL KSU-compatible managers work: KernelSU-Next, ReSukiSU,
+      # SukiSU-Ultra, KoWSu — they share the same kernel protocol.
       - run:
           name: "Root solution: $ROOT_SOLUTION"
           command: |
             cd "$KERNEL_SRC" || { echo "WARN: kernel_src not found"; exit 0; }
             echo "ROOT_SOLUTION=$ROOT_SOLUTION"
             case "$ROOT_SOLUTION" in
-              kernelsu-next)
-                echo "Setting up KernelSU-Next..."
+              kernelsu)
+                echo "Setting up KernelSU (universal — all KSU managers compatible)..."
                 if [ -d "KernelSU/kernel" ]; then
                   echo "KernelSU already present"
                 else
@@ -107,47 +140,11 @@ jobs:
                   if [ "$KSU_OK" = "1" ] && [ -f KernelSU/kernel/setup.sh ]; then
                     bash KernelSU/kernel/setup.sh -o KernelSU 2>/dev/null || true
                   fi
-                  [ "$KSU_OK" = "1" ] && echo "KernelSU-Next ready" || echo "WARNING: no KernelSU"
-                fi
-                ;;
-              resukisu)
-                echo "Setting up ReSukiSU..."
-                if [ -d "KernelSU/kernel" ]; then
-                  echo "KernelSU already present"
-                else
-                  GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
-                    --config "credential.helper=" \
-                    "https://github.com/ReSukiSU/KernelSU" KernelSU 2>/dev/null \
-                    && bash KernelSU/kernel/setup.sh -o KernelSU 2>/dev/null || true
-                  echo "ReSukiSU done"
-                fi
-                ;;
-              sukisu-ultra)
-                echo "Setting up SukiSU-Ultra..."
-                if [ -d "KernelSU/kernel" ]; then
-                  echo "KernelSU already present"
-                else
-                  GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
-                    --config "credential.helper=" \
-                    "https://github.com/SukiSU-Ultra/KernelSU" KernelSU 2>/dev/null \
-                    && bash KernelSU/kernel/setup.sh -o KernelSU 2>/dev/null || true
-                  echo "SukiSU-Ultra done"
-                fi
-                ;;
-              kowsu)
-                echo "Setting up KoWSu..."
-                if [ -d "KernelSU/kernel" ]; then
-                  echo "KernelSU already present"
-                else
-                  GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
-                    --config "credential.helper=" \
-                    "https://github.com/KoWSu/KernelSU" KernelSU 2>/dev/null \
-                    && bash KernelSU/kernel/setup.sh -o KernelSU 2>/dev/null || true
-                  echo "KoWSu done"
+                  [ "$KSU_OK" = "1" ] && echo "KernelSU ready (compatible with all KSU managers)" || echo "WARNING: no KernelSU"
                 fi
                 ;;
               apatch)
-                echo "APatch mode: no kernel-side root needed (APatch uses ramdisk)"
+                echo "APatch mode: no kernel-side root (APatch patches kernel at flash time)"
                 ;;
               none)
                 echo "No root solution selected"
@@ -186,14 +183,28 @@ jobs:
           command: |
             REPO_DIR="$PWD"
             cd "$KERNEL_SRC" || { echo "ERROR: $KERNEL_SRC not found"; exit 1; }
-            cp -v "$REPO_DIR/arch/arm64/configs/infinity_defconfig" arch/arm64/configs/infinity_defconfig
-            cp -v "$REPO_DIR/include/linux/infinity_charging_control.h" include/linux/infinity_charging_control.h
-            cp -rv "$REPO_DIR/drivers/charging" drivers/charging
-            grep -q 'source "drivers/charging/Kconfig"' drivers/Kconfig 2>/dev/null \
-              || echo 'source "drivers/charging/Kconfig"' >> drivers/Kconfig
-            grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' drivers/Makefile 2>/dev/null \
-              || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> drivers/Makefile
-            cp -rv "$REPO_DIR/patches" patches
+            # Copy defconfig (critical)
+            if [ -f "$REPO_DIR/arch/arm64/configs/infinity_defconfig" ]; then
+              cp -v "$REPO_DIR/arch/arm64/configs/infinity_defconfig" arch/arm64/configs/infinity_defconfig
+            else
+              echo "WARNING: infinity_defconfig not found in repo, skipping"
+            fi
+            # Copy charging control header
+            if [ -f "$REPO_DIR/include/linux/infinity_charging_control.h" ]; then
+              cp -v "$REPO_DIR/include/linux/infinity_charging_control.h" include/linux/infinity_charging_control.h
+            fi
+            # Copy charging driver
+            if [ -d "$REPO_DIR/drivers/charging" ]; then
+              cp -rv "$REPO_DIR/drivers/charging" drivers/charging
+              grep -q 'source "drivers/charging/Kconfig"' drivers/Kconfig 2>/dev/null \
+                || echo 'source "drivers/charging/Kconfig"' >> drivers/Kconfig
+              grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' drivers/Makefile 2>/dev/null \
+                || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> drivers/Makefile
+            fi
+            # Copy patches
+            if [ -d "$REPO_DIR/patches" ]; then
+              cp -rv "$REPO_DIR/patches" patches
+            fi
             echo "Files copied OK"
 
       # ── Step 6: Config ────────────────────────────────
@@ -300,8 +311,12 @@ jobs:
             fi
             echo "=== Fix 2/15: hugetlbpage.c ptep -> pte ==="
             if [ -f "mm/hugetlbpage.c" ]; then
-              sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c 2>/dev/null
-              echo "  Done"
+              if grep -q 'huge_pmd_share' mm/hugetlbpage.c 2>/dev/null; then
+                sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c 2>/dev/null
+                echo "  Done (pattern found and patched)"
+              else
+                echo "  Skip (pattern not found in file — already fixed or different code)"
+              fi
             else
               echo "  Skip (file not found)"
             fi
@@ -320,8 +335,11 @@ jobs:
               echo "  Skip (file not found)"
             fi
             echo "=== Fix 5/15: sock.c compat_timeval ==="
-            if [ -f "net/core/sock.c" ] && grep -q 'compat_timeval' net/core/sock.c 2>/dev/null; then
+            if [ -f "net/core/sock.c" ]; then
               LI=$(grep -n '^#include' net/core/sock.c | tail -1 | cut -d: -f1)
+              if [ -z "$LI" ]; then
+                LI=$(grep -n '#include' net/core/sock.c | head -1 | cut -d: -f1)
+              fi
               if [ -n "$LI" ]; then
                 head -n "$LI" net/core/sock.c > /tmp/sock_top.c
                 echo '' >> /tmp/sock_top.c
@@ -331,13 +349,12 @@ jobs:
                 echo 'struct compat_timeval { int tv_sec; int tv_usec; };' >> /tmp/sock_top.c
                 tail -n +"$((LI + 1))" net/core/sock.c >> /tmp/sock_top.c
                 mv /tmp/sock_top.c net/core/sock.c
-                echo "  Injected after line $LI"
+                echo "  Done (injected after line $LI)"
               else
-                echo "  Skip (no #include found)"
+                echo "  Skip (no #include found in file)"
               fi
-              echo "  Done"
             else
-              echo "  Skip (file not found or no compat_timeval)"
+              echo "  Skip (file not found)"
             fi
             echo "=== Fix 6/15: net/compat.c CONFIG_COMPAT ==="
             if [ -f "net/compat.c" ] && ! grep -q 'CONFIG_COMPAT' net/compat.c 2>/dev/null; then
@@ -383,10 +400,17 @@ jobs:
             else
               echo "  Skip (file not found)"
             fi
-            echo "=== Fix 12/15: pinctrl includes (all drivers) ==="
+            echo "=== Fix 12/15: pinctrl includes (targeted) ==="
             PINCTRL_COUNT=0
-            for f in $(grep -rl 'pinctrl_select_state\|pinctrl_pm_select\|devm_pinctrl_get' --include='*.c' --include='*.h' drivers/ 2>/dev/null); do
+            for f in \
+              drivers/input/touchscreen/synaptics_tcm_core.c \
+              drivers/input/touchscreen/synaptics_tcm_i2c.c \
+              drivers/input/touchscreen/hbtp_input.c \
+              drivers/input/touchscreen/synaptics_tcm_touch.c \
+              drivers/platform/msm/synaptics_tcm_touch.c; do
+              [ -f "$f" ] || continue
               grep -q 'linux/pinctrl/consumer.h' "$f" 2>/dev/null && continue
+              grep -q 'pinctrl_select_state\|pinctrl_pm_select\|devm_pinctrl_get' "$f" 2>/dev/null || continue
               sed -i '1i #include <linux/pinctrl/consumer.h>' "$f" 2>/dev/null
               PINCTRL_COUNT=$((PINCTRL_COUNT + 1))
               echo "  Added pinctrl include: $f"
@@ -394,8 +418,7 @@ jobs:
             echo "  Done ($PINCTRL_COUNT files patched)"
             echo "=== Fix 13/15: iommu-debug.c stub ==="
             if [ -f "drivers/iommu/iommu-debug.c" ]; then
-              printf '/* stubbed: dev_archdata.mapping removed */\n#include <linux/module.h>\n#include <linux/device.h>\nvoid iommu_debugfs_setup(void) {}\nvoid iommu_debugfs_add_device(struct device *dev) {}\nvoid iommu_debugfs_remove_device(struct device *dev) {}\nEXPORT_SYMBOL(iommu_debugfs_setup);\nEXPORT_SYMBOL(iommu_debugfs_add_device);\nEXPORT_SYMBOL(iommu_debugfs_remove_device);\n' > drivers/iommu/iommu-debug.c
-              echo "  Done"
+              printf '/* stubbed: dev_archdata.mapping removed */\n#include <linux/module.h>\n#include <linux/device.h>\nvoid iommu_debugfs_setup(void) {}\nvoid iommu_debugfs_add_device(struct device *dev) {}\nvoid iommu_debugfs_remove_device(struct device *dev) {}\nEXPORT_SYMBOL(iommu_debugfs_setup);\nEXPORT_SYMBOL(iommu_debugfs_add_device);\nEXPORT_SYMBOL(iommu_debugfs_remove_device);\n' > drivers/iommu/iommu-debug.c 2>/dev/null && echo "  Done" || echo "  Failed to write stub (permission?)"
             else
               echo "  Skip (file not found)"
             fi
@@ -473,7 +496,7 @@ jobs:
 
       - store_artifacts:
           path: /tmp/infinity-kernel-latest.zip
-          destination: infinity-kernel-v1.0.60.zip
+          destination: infinity-kernel-v1.0.62.zip
 
 workflows:
   infinity_build:

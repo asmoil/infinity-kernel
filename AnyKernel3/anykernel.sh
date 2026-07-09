@@ -1,161 +1,121 @@
-### AnyKernel3 Ramdisk Mod Script
-## Infinity Kernel for POCO X3 Pro (vayu/bhima)
-## Based on AnyKernel3 by osm0sis @ xda-developers
-##
-## Multi-Root: KernelSU-Next, ReSukiSU, SukiSU-Ultra, KoWSu, APatch
-## SuSFS v2.1.0 | Android 11-16 QPR2+ | AOSP, MIUI, HyperOS, OxygenOS
+# AnyKernel3 Flash Script
+# Infinity Kernel for Poco X3 Pro (vayu/bhima) | SM8150
 
-# ================================================================
-# === AnyKernel properties (checked BEFORE any shell runs)     ===
-# ================================================================
-properties() { '
-kernel.string=Infinity Kernel for POCO X3 Pro
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
+## AnyKernel3 parameters
+kernel.string="Infinity Kernel"
 device.name1=vayu
 device.name2=bhima
-device.name3=
-device.name4=
-device.name5=
-supported.versions=11-16
+supported.versions=11,12,13,14,15,16
 supported.patchlevels=
-supported.vendorpatchlevels=
-'; } # end properties
 
-# ================================================================
-# === Boot ramdisk file permissions                            ===
-# ================================================================
-boot_attributes() {
-set_perm_recursive 0 0 755 644 $RAMDISK/*;
-set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
-} # end attributes
+## Flashing options
+do.devicecheck=1
+do.systemless=1
+do.cleanflash=0
+do.promptforclean=0
 
-# ================================================================
-# === Core variables (set BEFORE importing ak3-core.sh)        ===
-# ================================================================
-BLOCK=boot;
-IS_SLOT_DEVICE=1;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
-NO_BLOCK_DISPLAY=1;
+## Shell variables
+block=/dev/block/bootdevice/by-name/boot
+is_slot_device=1
+slot_select=1
 
-# ================================================================
-# === Import AnyKernel3 core  (calls setup_ak internally)      ===
-# ================================================================
-. tools/ak3-core.sh;
+## Functions
 
-# ================================================================
-# === BANNER                                                   ===
-# ================================================================
-ui_print " ";
-ui_print "╔══════════════════════════════════════╗";
-ui_print "║      Infinity Kernel v1.0.60          ║";
-ui_print "║  POCO X3 Pro (vayu/bhima)             ║";
-ui_print "║  SM8150 · Linux 4.14 · Neutron Clang  ║";
-ui_print "║  Multi-Root · SuSFS · BBR · ZRAM      ║";
-ui_print "╚══════════════════════════════════════╝";
-ui_print " ";
+# Dump boot partition and extract contents
+dump_boot() {
+  dd if="$1" of="$2" bs=4096 2>/dev/null
+}
 
-# ================================================================
-# === AUTO-DETECTION                                           ===
-# ================================================================
-ui_print "┌─ System Detection ─────────────────────";
+# Write image to boot partition
+flash_boot() {
+  dd if="$1" of="$2" bs=4096 2>/dev/null
+}
 
-API=$(getprop ro.build.version.sdk 2>/dev/null);
-[ -z "$API" ] && abort "Cannot read Android API. Aborting.";
+# Backup current boot image
+backup_boot() {
+  if [ "$do.backcup" != "0" ]; then
+    local bak="${BACKUP_DIR:-/sdcard}/InfinityKernel-backup${SLOT}.img"
+    ui_print "  Backing up current boot image..."
+    dd if="${block}${SLOT}" of="$bak" bs=4096 2>/dev/null
+    ui_print "  Backup saved to: $bak"
+  fi
+}
 
-if   [ "$API" -ge 36 ]; then
-  ANDROID_VER="Android 16"; ui_print "│  Android: 16  (API $API)  ✓";
-elif [ "$API" -ge 35 ]; then
-  ANDROID_VER="Android 15"; ui_print "│  Android: 15  (API $API)  ✓";
-elif [ "$API" -ge 34 ]; then
-  ANDROID_VER="Android 14"; ui_print "│  Android: 14  (API $API)  ✓";
-elif [ "$API" -ge 33 ]; then
-  ANDROID_VER="Android 13"; ui_print "│  Android: 13  (API $API)  ✓";
-elif [ "$API" -ge 32 ]; then
-  ANDROID_VER="Android 12"; ui_print "│  Android: 12  (API $API)  ✓";
-elif [ "$API" -ge 30 ]; then
-  ANDROID_VER="Android 11"; ui_print "│  Android: 11  (API $API)  ✓";
-else
-  abort "Android $API is NOT supported. Need 11+.";
-fi;
+# Check device compatibility
+check_device() {
+  local prop
+  prop=$(getprop ro.product.device 2>/dev/null)
+  case "$prop" in
+    vayu|bhima) return 0 ;;
+  esac
+  prop=$(getprop ro.product.model 2>/dev/null)
+  case "$prop" in
+    *M2102J20SG*|*M2102K20G*) return 0 ;;
+  esac
+  return 1
+}
 
-TURBO_VER=$(getprop ro.mi.turboos.version.name  2>/dev/null);
-HYPER_VER=$(getprop ro.mi.os.version.name        2>/dev/null);
-MIUI_VER=$(getprop  ro.miui.version.code_time    2>/dev/null);
-OXYGEN_VER=$(getprop ro.oxygen.version  2>/dev/null);
+# Verify boot partition exists
+check_boot() {
+  [ -b "${block}${SLOT}" ] || [ -e "${block}${SLOT}" ]
+}
 
-if   [ -n "$TURBO_VER" ]; then
-  ROM_TYPE="TurboOS"; ui_print "│  ROM:     TurboOS $TURBO_VER  ✓";
-elif [ -n "$HYPER_VER" ]; then
-  ROM_TYPE="HyperOS"; ui_print "│  ROM:     HyperOS $HYPER_VER  ✓";
-elif [ -n "$MIUI_VER" ];  then
-  ROM_TYPE="MIUI";    ui_print "│  ROM:     MIUI  ✓";
-elif [ -n "$OXYGEN_VER" ]; then
-  ROM_TYPE="OxygenOS"; ui_print "│  ROM:     OxygenOS  ✓";
-else
-  FLAVOR=$(getprop ro.build.flavor 2>/dev/null);
-  ROM_TYPE="AOSP/Custom";  ui_print "│  ROM:     $FLAVOR  ✓";
-fi;
+## Main installation
 
-if   [ "$SLOT" = "_a" ]; then
-  ui_print "│  Slot:    _a  →  flashing  boot_a  ✓";
-elif [ "$SLOT" = "_b" ]; then
-  ui_print "│  Slot:    _b  →  flashing  boot_b  ✓";
-else
-  ui_print "│  Slot:    (none — A-only device)";
-fi;
-ui_print "│  Block:   $BLOCK";
+ui_print " "
+ui_print "  Device check..."
+if [ "$do.devicecheck" != "0" ]; then
+  if ! check_device; then
+    ui_print "  WARNING: Device may not be compatible!"
+    ui_print "  Expected: vayu / bhima (Poco X3 Pro)"
+    ui_print "  Found: $(getprop ro.product.device) / $(getprop ro.product.model)"
+    ui_print " "
+    ui_print "  Flashing anyway in 3 seconds..."
+    sleep 3
+  else
+    ui_print "  Device verified: $(getprop ro.product.device)"
+  fi
+fi
 
-CURRENT=$(uname -r 2>/dev/null);
-ui_print "│  Current: $CURRENT";
+ui_print "  Checking boot partition..."
+if ! check_boot; then
+  abort "Boot partition not found: ${block}${SLOT}"
+fi
+ui_print "  Boot partition: ${block}${SLOT}"
 
-ui_print "└────────────────────────────────────────";
-ui_print " ";
+# Backup
+backup_boot
 
-# ================================================================
-# === PARTITION SAFETY TABLE                                   ===
-# ================================================================
-ui_print "┌─ Partition plan ───────────────────────";
-ui_print "│  boot${SLOT}  →  FLASH  ✓  (new kernel)";
-ui_print "│  dtbo         →  SKIP   ✓  (Xiaomi HW overlays)";
-ui_print "│  vbmeta       →  SKIP   ✓  (already patched)";
-ui_print "│  vendor_boot  →  SKIP   ✓";
-ui_print "│  init_boot    →  SKIP   ✓";
-ui_print "└────────────────────────────────────────";
-ui_print " ";
+# Remove old Image.gz-dtb if clean flash requested
+if [ "$do.cleanflash" != "0" ]; then
+  ui_print "  Clean flash requested, removing old Image.gz-dtb..."
+  rm -f "$TMPDIR/anykernel/Image.gz-dtb"
+fi
 
-# ================================================================
-# === FLASH                                                    ===
-# ================================================================
-ui_print "┌─ Flashing boot${SLOT} ───────────────────────";
+# Check that kernel image exists
+if [ ! -f "$TMPDIR/anykernel/Image.gz-dtb" ]; then
+  abort "Image.gz-dtb not found in ZIP!"
+fi
 
-dump_boot;
-write_boot;
+ui_print " "
+ui_print "  Flashing kernel..."
+flash_boot "$TMPDIR/anykernel/Image.gz-dtb" "${block}${SLOT}"
+if [ $? -ne 0 ]; then
+  abort "Failed to write boot image!"
+fi
 
-ui_print "│  Done.";
-ui_print "└────────────────────────────────────────";
+# Handle dtb if present
+if [ -f "$TMPDIR/anykernel/dtb.img" ]; then
+  ui_print "  Flashing DTB..."
+  dtb_block=/dev/block/bootdevice/by-name/dtbo
+  flash_boot "$TMPDIR/anykernel/dtb.img" "${dtb_block}${SLOT}"
+fi
 
-# ================================================================
-# === SUMMARY                                                  ===
-# ================================================================
-ui_print " ";
-ui_print "╔══════════════════════════════════════╗";
-ui_print "║  Flash complete!                      ║";
-ui_print "╠══════════════════════════════════════╣";
-ui_print "║  ROM:     $ROM_TYPE";
-ui_print "║  Android: $ANDROID_VER";
-ui_print "║  Slot:    $SLOT  →  boot${SLOT}";
-ui_print "╠══════════════════════════════════════╣";
-ui_print "║  Supported root solutions:            ║";
-ui_print "║  · KernelSU-Next                      ║";
-ui_print "║  · ReSukiSU                           ║";
-ui_print "║  · SukiSU-Ultra                       ║";
-ui_print "║  · KoWSu                              ║";
-ui_print "║  · APatch                             ║";
-ui_print "╚══════════════════════════════════════╝";
-ui_print " ";
-## end boot install
+ui_print " "
+ui_print "  ═══════════════════════════════════"
+ui_print "  Infinity Kernel installed!"
+ui_print "  ═══════════════════════════════════"
+ui_print " "
+
+## Cleanup
+rm -rf "$TMPDIR/anykernel"

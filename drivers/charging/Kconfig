@@ -1,6 +1,12 @@
+# Infinity Kernel Charging Control Driver
+# Poco X3 Pro (vayu/bhima) | SM8150
+
 config CHARGING_CONTROL
     bool "Infinity Charging Control"
     default y
     help
-      Battery charging control for Poco X3 Pro.
-      Modes: OFF, ON, PAUSE, LIMIT, BYPASS.
+      Enable charging control sysfs interface for Infinity Kernel.
+      Provides /sys/kernel/charging_control/ with attributes to
+      enable/disable charging and set current/voltage limits.
+      This is useful for extending battery lifespan by limiting
+      charge current or capping charge voltage.
