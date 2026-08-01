@@ -1,0 +1,15 @@
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -669,7 +669,11 @@
+ 
+ 	For further details see:
+ 	  D.A. Hayes and G. Armitage. "Revisiting TCP congestion control using
+ 	  delay gradients." In Networking 2011. Preprint: http://goo.gl/No3vdg
++config INFINITY_TCP_BBR_DEFAULT
++	bool "Infinity Kernel: BBR as default TCP"
++	depends on INFINITY_NETWORK_TUNING && TCP_CONG_BBR
++	default y if INFINITY_KERNEL
+ 
+ config TCP_CONG_BBR
+ 	tristate "BBR TCP"

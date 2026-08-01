@@ -1,0 +1,12 @@
+diff --git a/block/Kconfig.iosched b/block/Kconfig.iosched
+--- a/block/Kconfig.iosched
++++ b/block/Kconfig.iosched
+@@ -1,7 +1,8 @@
+ # SPDX-License-Identifier: GPL-2.0
+ if BLOCK
+ 
+ menu "IO Schedulers"
++comment "Infinity Kernel IO Tuning (INFINITY_FSYNC_TUNING)"
+ 
+ config IOSCHED_NOOP
+ 	bool

@@ -1,0 +1,16 @@
+diff --git a/kernel/cpu.c b/kernel/cpu.c
+--- a/kernel/cpu.c
++++ b/kernel/cpu.c
+@@ -2514,7 +2514,12 @@
+ }
+ early_param("mitigations", mitigations_parse_cmdline);
+ 
+ /* mitigations=off */
++#ifdef CONFIG_INFINITY_CPU_PERF_TUNING
++static bool infinity_hotplug_opt = true;
++module_param_named(hotplug_opt, infinity_hotplug_opt, bool, 0644);
++MODULE_PARM_DESC(hotplug_opt, "Optimize CPU hotplug (default: true)");
++#endif
+ bool cpu_mitigations_off(void)
+ {
+ 	return cpu_mitigations == CPU_MITIGATIONS_OFF;

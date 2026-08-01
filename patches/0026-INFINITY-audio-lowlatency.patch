@@ -1,0 +1,17 @@
+diff --git a/sound/core/pcm.c b/sound/core/pcm.c
+--- a/sound/core/pcm.c
++++ b/sound/core/pcm.c
+@@ -1291,7 +1291,13 @@
+ 
+ 
+ /*
+  *  ENTRY functions
++#ifdef CONFIG_INFINITY_KERNEL
++#include <linux/moduleparam.h>
++static unsigned int infinity_audio_latency_ms = 20;
++module_param_named(audio_latency_ms, infinity_audio_latency_ms, uint, 0644);
++MODULE_PARM_DESC(audio_latency_ms, "Target audio latency ms (default: 20)");
++#endif
+  */
+ 
+ static int __init alsa_pcm_init(void)

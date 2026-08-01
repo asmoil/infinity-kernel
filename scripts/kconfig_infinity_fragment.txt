@@ -1,0 +1,12 @@
+menuconfig INFINITY_KERNEL
+	bool "Infinity Kernel Customizations"
+	default y
+	help
+	  Enable Infinity Kernel customizations for Poco X3 Pro.
+
+config INFINITY_FSYNC_TUNING
+	bool "Infinity Kernel FSync Tuning"
+	depends on BLOCK
+	default y if INFINITY_KERNEL
+	help
+	  Fsync tuning for reduced input latency.

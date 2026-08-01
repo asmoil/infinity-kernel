@@ -1,0 +1,20 @@
+diff --git a/kernel/sched/walt.c b/kernel/sched/walt.c
+--- a/kernel/sched/walt.c
++++ b/kernel/sched/walt.c
+@@ -25,7 +25,16 @@
+ #include <linux/jiffies.h>
+ #include <linux/sched/core_ctl.h>
+ #include <linux/sched/stat.h>
+ #include <trace/events/sched.h>
++#ifdef CONFIG_INFINITY_CPU_PERF_TUNING
++#include <linux/moduleparam.h>
++static unsigned int infinity_walt_window_boost = 0;
++module_param_named(walt_window_boost, infinity_walt_window_boost, uint, 0644);
++MODULE_PARM_DESC(walt_window_boost, "Boost WALT window size for task scheduling");
++static unsigned int infinity_walt_task_boost_pct = 0;
++module_param_named(walt_task_boost_pct, infinity_walt_task_boost_pct, uint, 0644);
++MODULE_PARM_DESC(walt_task_boost_pct, "Task demand boost pct (0-100) for gaming");
++#endif
+ #include "sched.h"
+ #include "walt.h"
+ 

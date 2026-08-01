@@ -1,0 +1,47 @@
+#
+# Infinity Kernel Task-Aware Performance Engine Configuration
+#
+
+config INFINITY_TASK_ENGINE
+	tristate "Infinity Task-Aware Performance Engine"
+	depends on CPU_FREQ && THERMAL && SYSFS
+	default y
+	help
+	  Automatically detects the current workload type (gaming, media,
+	  browsing, idle, etc.) and dynamically adjusts CPU frequencies,
+	  GPU clocks, IO scheduler, memory parameters, and thermal limits
+	  to match the task requirements.
+
+	  Profiles:
+	    - IDLE: Minimal resources, maximum battery savings
+	    - SOCIAL: Balanced for Telegram, Instagram, etc.
+	    - BROWSE: Optimized for web browsing
+	    - MEDIA: Tuned for video/music playback
+	    - NORMAL: Default balanced profile
+	    - IO_HEAVY: Boosted IO for file operations
+	    - GAMING_LIGHT: Casual 2D games
+	    - GAMING_HEAVY: Maximum performance for 3D games
+	    - CHARGING: Cool charging, minimum heat
+
+	  The engine uses a userspace hint (via sysfs) combined with
+	  kernel-side CPU/GPU load monitoring to classify workloads
+	  and switch between performance profiles automatically.
+
+	  Profile switching has hysteresis (6s minimum) to prevent
+	  thrashing between profiles.
+
+	  Sysfs interface:
+	    /sys/devices/platform/infinity_task_engine/
+	      current_profile  - Read current detected profile
+	      force_profile    - Write to override (0=auto)
+	      auto_detect      - Enable/disable auto detection
+	      detect_interval  - Detection interval in ms
+	      stats            - Show profile statistics
+
+config INFINITY_TASK_ENGINE_DEBUG
+	bool "Task Engine Debug Messages"
+	depends on INFINITY_TASK_ENGINE
+	default n
+	help
+	  Enable debug printk messages for the task engine.
+	  Useful for development and tuning. Disable for production.

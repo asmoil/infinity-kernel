@@ -1,0 +1,16 @@
+diff --git a/kernel/power/autosleep.c b/kernel/power/autosleep.c
+--- a/kernel/power/autosleep.c
++++ b/kernel/power/autosleep.c
+@@ -18,7 +18,12 @@
+ /*
+  * Note: it is only safe to mutex_lock(&autosleep_lock) if a wakeup_source
+  * is active, otherwise a deadlock with try_to_suspend() is possible.
+  * Alternatively mutex_lock_interruptible() can be used.  This will then fail
++#ifdef CONFIG_INFINITY_BATTERY_OPT
++static bool infinity_autosleep_aggressive = true;
++module_param_named(autosleep_aggressive, infinity_autosleep_aggressive, bool, 0644);
++MODULE_PARM_DESC(autosleep_aggressive, "Aggressive autosleep (default: true)");
++#endif
+  * if an auto_sleep cycle tries to freeze processes.
+  */
+ static DEFINE_MUTEX(autosleep_lock);

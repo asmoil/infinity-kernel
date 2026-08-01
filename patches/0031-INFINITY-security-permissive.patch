@@ -1,0 +1,12 @@
+diff --git a/security/selinux/Kconfig b/security/selinux/Kconfig
+--- a/security/selinux/Kconfig
++++ b/security/selinux/Kconfig
+@@ -1,2 +1,8 @@
++config INFINITY_SELINUX_PERMISSIVE
++	bool "Infinity Kernel: Permissive SELinux"
++	depends on SECURITY_SELINUX
++	default y if INFINITY_KERNEL
++	help
++	  Permissive SELinux for root manager compatibility.
+ config SECURITY_SELINUX
+ 	bool "NSA SELinux Support"

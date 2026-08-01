@@ -1,0 +1,17 @@
+diff --git a/fs/Kconfig b/fs/Kconfig
+--- a/fs/Kconfig
++++ b/fs/Kconfig
+@@ -105,6 +105,13 @@
+ 	help
+ 	  SuSFS v2.2.0 support for KernelSU stealth.
+ 
++config INFINITY_SUSFS_STEALTH
++	bool "Infinity Kernel SuSFS Stealth Mode"
++	depends on INFINITY_SUSFS_ENABLE
++	default y if INFINITY_KERNEL
++	help
++	  Enable SuSFS stealth features for root hiding.
++
+ source "fs/quota/Kconfig"
+ 
+ source "fs/autofs4/Kconfig"

@@ -1,0 +1,17 @@
+diff --git a/drivers/thermal/qcom/rpm_smd_cooling_device.c b/drivers/thermal/qcom/rpm_smd_cooling_device.c
+--- a/drivers/thermal/qcom/rpm_smd_cooling_device.c
++++ b/drivers/thermal/qcom/rpm_smd_cooling_device.c
+@@ -15,7 +15,13 @@
+ #include <linux/platform_device.h>
+ #include <linux/thermal.h>
+ #include <linux/err.h>
+ #include <soc/qcom/rpm-smd.h>
++#ifdef CONFIG_INFINITY_CHARGING_CONTROL
++#include <linux/moduleparam.h>
++static int infinity_thermal_offset_mc = 300;
++module_param_named(thermal_offset_mc, infinity_thermal_offset_mc, int, 0644);
++MODULE_PARM_DESC(thermal_offset_mc, "Thermal trip offset in mC (default: 300)");
++#endif
+ 
+ #define RPM_SMD_CDEV_DRIVER   "rpm-smd-cooling-device"
+ #define RPM_SMD_RES_TYPE       0x6d726874

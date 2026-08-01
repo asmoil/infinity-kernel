@@ -1,0 +1,15 @@
+diff --git a/mm/Kconfig b/mm/Kconfig
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -254,5 +254,11 @@
+ 	default y if INFINITY_KERNEL
+ 	help
+ 	  Battery life optimizations.
++config INFINITY_MEMORY_COMPACT
++	bool "Infinity Kernel Memory Compaction Tuning"
++	depends on COMPACTION
++	default y if INFINITY_KERNEL
++	help
++	  Optimized memory compaction for gaming.
+ config COMPACTION
+ 	bool "Allow for memory compaction"
