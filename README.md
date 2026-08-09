@@ -142,4 +142,4 @@ MIT License
 
 ## Автор
 
-**Volchenok** — [github.com/asmoil/infinity-kernel](https://github.com/asmoil/infinity-kernel)
+**Volchenok** — [github.com/asmoil/infinity-kernel](https://github.com/asmoil/)
