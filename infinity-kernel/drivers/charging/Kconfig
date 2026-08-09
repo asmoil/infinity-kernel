@@ -1,0 +1,40 @@
+#
+# Infinity Kernel Charging Control Driver
+# For Poco X3 Pro (vayu/bhima)
+#
+
+config INFINITY_CHARGING_CONTROL
+	tristate "Infinity Kernel Charging Control (Gaming Bypass)"
+	depends on POWER_SUPPLY && REGULATOR
+	default m if INFINITY_KERNEL
+	help
+	  Charging control driver for Infinity Kernel.
+
+	  Features:
+	  - Charging bypass: disables charging while gaming (USB stays active)
+	  - 4 gaming modes: off / low / medium / full bypass
+	  - Thermal monitoring: auto-cooldown when battery is hot
+	  - Safety: auto-resume charging below 15% battery
+	  - Sysfs control: /sys/devices/platform/.../infinity_charging/
+	  - IOCTL interface for apps
+
+	  Controls:
+	  - bypass_enable (0/1)
+	  - gaming_mode (0-3)
+	  - charge_current (100-5000 mA)
+	  - cooldown_threshold (30-60 C)
+	  - battery_temp, battery_voltage, battery_capacity (read-only)
+	  - stats (read-only)
+
+config INFINITY_CHARGING_BYPASS
+	bool "Infinity Charging Bypass (Gaming Mode)"
+	depends on INFINITY_CHARGING_CONTROL
+	default y
+	help
+	  Enables the charging bypass feature that disables charging
+	  while gaming to prevent overheating and thermal throttling.
+
+config INFINITY_GAME_CHARGING_BYPASS
+	bool
+	depends on INFINITY_CHARGING_BYPASS
+	default INFINITY_CHARGING_BYPASS

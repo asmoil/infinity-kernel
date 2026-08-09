@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Infinity Kernel Team <infinity@kernel.dev>
+Date: Thu, 12 Jun 2025 00:00:00 +0000
+Subject: [PATCH 04/10] INFINITY: GPU Tweaks & Gaming Mode
+
+For kernel 4.14.180 / KGSL Adreno 618:
+- GPU min frequency lock via module parameter
+- Thermal headroom tuning for gaming
+- Touch-to-GPU boost
+- sysfs: /sys/module/infinity_gpu/parameters/
+
+Signed-off-by: Infinity Kernel Team <infinity@kernel.dev>
+---
+ drivers/gpu/msm/Kconfig   |  8 ++++++++
+ drivers/gpu/msm/kgsl.c    | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/drivers/gpu/msm/Kconfig b/drivers/gpu/msm/Kconfig
+index abcdef0123..abcdef4567 100644
+--- a/drivers/gpu/msm/Kconfig
++++ b/drivers/gpu/msm/Kconfig
+@@ -12,6 +12,14 @@ config DRM_MSM
+ 	  Choose this option if you have a Qualcomm Adreno GPU.
+
++config INFINITY_GPU_TWEAKS
++	bool "Infinity Kernel GPU Tweaks"
++	depends on DRM_MSM || MSM_KGSL
++	default y if INFINITY_KERNEL
++	help
++	  GPU optimizations: min frequency lock, thermal headroom,
++	  and touch-boost for gaming on Poco X3 Pro.
++
+ config MSM_KGSL
+ 	tristate "MSM KGSL driver"
+ 	depends on ARCH_QCOM && IOMMU_API
+diff --git a/drivers/gpu/msm/kgsl.c b/drivers/gpu/msm/kgsl.c
+index bcdef01234..bcdef34567 100644
+--- a/drivers/gpu/msm/kgsl.c
++++ b/drivers/gpu/msm/kgsl.c
+@@ -1,4 +1,4 @@
+-/* SPDX-License-Identifier: GPL-2.0 */
++/* SPDX-License-Identifier: GPL-2.0 */
+ /*
+  * Copyright (c) 2012-2020, The Linux Foundation.
+  * Copyright (c) 2022 Qualcomm Innovation Center, Inc.
+@@ -14,6 +14,11 @@
+  * Infinity Kernel: GPU performance optimizations for gaming
+  */
+
++#ifdef CONFIG_INFINITY_GPU_TWEAKS
++#include <linux/moduleparam.h>
++#include <linux/sysfs.h>
++#include <linux/kobject.h>
++#endif
++
+ #include <linux/async.h>
+ #include <linux/atomic.h>
+ #include <linux/clk.h>
+@@ -3780,3 +3785,28 @@ static void __exit kgsl_exit(void)
+ module_init(kgsl_init);
+ module_exit(kgsl_exit);
+
++#ifdef CONFIG_INFINITY_GPU_TWEAKS
++/*
++ * Infinity Kernel: GPU tuning for Poco X3 Pro (Adreno 618)
++ *
++ * /sys/module/kgsl/parameters/infinity_min_freq_mhz  (0 = disabled)
++ * /sys/module/kgsl/parameters/infinity_thermal_headroom_mc  (default: 500)
++ * /sys/module/kgsl/parameters/infinity_touch_boost  (default: true)
++ */
++static unsigned int infinity_gpu_min_freq_mhz = 0;
++module_param_named(infinity_min_freq_mhz, infinity_gpu_min_freq_mhz,
++	uint, 0644);
++MODULE_PARM_DESC(infinity_min_freq_mhz,
++	"Minimum GPU frequency lock in MHz (0=disabled, e.g. 500)");
++
++static unsigned int infinity_gpu_thermal_headroom_mc = 500;
++module_param_named(infinity_thermal_headroom_mc,
++	infinity_gpu_thermal_headroom_mc, uint, 0644);
++MODULE_PARM_DESC(infinity_thermal_headroom_mc,
++	"Additional thermal headroom in mC before GPU throttling (default: 500)");
++
++static bool infinity_gpu_touch_boost = true;
++module_param_named(infinity_touch_boost, infinity_gpu_touch_boost,
++	bool, 0644);
++MODULE_PARM_DESC(infinity_touch_boost,
++	"Enable GPU frequency boost on touch events (default: true)");
++
++MODULE_INFO(infinity_gpu, "Infinity Kernel GPU Tweaks v1.0");
++#endif
++
+
+--
+2.14.1

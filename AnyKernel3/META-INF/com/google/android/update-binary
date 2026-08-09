@@ -1,13 +1,107 @@
-#!/sbin/sh
+#!/bin/sh
+# Infinity Kernel AnyKernel3 flash script
+# Poco X3 Pro (vayu/bhima) | SM8150 | A/B device
 
-# AnyKernel3 update-binary
-# Infinity Kernel for Poco X3 Pro (vayu/bhima)
+umask 022
 
-OUTFD=${2:-1}
-ZIPFILE=$3
+echo "=========================================="
+echo " Infinity Kernel Flasher"
+echo " Poco X3 Pro (vayu/bhima)"
+echo "=========================================="
 
-# Load AnyKernel functions
-. "$AKHOME"/anykernel.sh
+# Verify device
+if [ ! -f /proc/cmdline ]; then
+  echo "ERROR: /proc/cmdline not found!"
+  exit 1
+fi
 
-# Run the main script
-. "$AKHOME"/anykernel.sh
+if ! grep -q "vayu\|bhima" /proc/cmdline 2>/dev/null; then
+  echo "WARNING: Device may not be vayu/bhima"
+  echo "Continuing anyway..."
+fi
+
+# Determine active slot for A/B device
+SLOT_SUFFIX=$(grep -o 'androidboot.slot_suffix=[a-b]' /proc/cmdline 2>/dev/null | head -1 | cut -d= -f2)
+if [ -z "$SLOT_SUFFIX" ]; then
+  SLOT_SUFFIX=$(cat /proc/cmdline 2>/dev/null | tr ' ' '\n' | grep 'androidboot.slot' | head -1 | grep -o '[a-b]$')
+fi
+if [ -z "$SLOT_SUFFIX" ]; then
+  # Try bootctl
+  SLOT_SUFFIX=$(getprop ro.boot.slot_suffix 2>/dev/null)
+fi
+if [ -z "$SLOT_SUFFIX" ]; then
+  SLOT_SUFFIX="a"
+  echo "Could not detect slot, defaulting to _a"
+fi
+
+echo "Active slot: ${SLOT_SUFFIX}"
+
+# Find boot partition
+BOOTPART="/dev/block/by-name/boot_${SLOT_SUFFIX}"
+DTBOPART="/dev/block/by-name/dtbo_${SLOT_SUFFIX}"
+
+if [ ! -b "$BOOTPART" ]; then
+  # Fallback: try without slot suffix (non-A/B or symlinked)
+  BOOTPART="/dev/block/by-name/boot"
+  DTBOPART="/dev/block/by-name/dtbo"
+fi
+
+if [ ! -b "$BOOTPART" ] && [ ! -e "$BOOTPART" ]; then
+  echo "ERROR: Boot partition not found: $BOOTPART"
+  echo "Available partitions:"
+  ls -la /dev/block/by-name/ 2>/dev/null | head -20
+  exit 1
+fi
+
+# Flash kernel using magiskboot if available (preserves ramdisk, dtbo)
+if command -v magiskboot >/dev/null 2>&1; then
+  echo "Using magiskboot for proper boot.img patching..."
+  WORK_DIR=/data/local/tmp/ik_flash
+  rm -rf "$WORK_DIR"
+  mkdir -p "$WORK_DIR"
+  cd "$WORK_DIR"
+
+  # Extract stock boot.img
+  dd if="$BOOTPART" of=stock_boot.img 2>/dev/null
+  magiskboot unpack stock_boot.img 2>/dev/null
+
+  # Replace kernel
+  if [ -f "$home/Image.gz-dtb" ]; then
+    cp -f "$home/Image.gz-dtb" kernel
+    echo "Kernel replaced"
+  else
+    echo "ERROR: Image.gz-dtb not found in ZIP!"
+    cd /
+    rm -rf "$WORK_DIR"
+    exit 1
+  fi
+
+  # Repack and flash
+  magiskboot repack stock_boot.img new_boot.img 2>/dev/null
+  dd if=new_boot.img of="$BOOTPART" 2>/dev/null
+  echo "Kernel flashed via magiskboot to $BOOTPART"
+
+  cd /
+  rm -rf "$WORK_DIR"
+else
+  # Fallback: dd directly (no ramdisk preservation — GZ kernel contains DTB)
+  echo "Using dd fallback (install Magisk for proper boot.img patching)..."
+  if [ -f "$home/Image.gz-dtb" ]; then
+    dd if="$home/Image.gz-dtb" of="$BOOTPART"
+    echo "Kernel flashed to $BOOTPART"
+  else
+    echo "ERROR: Image.gz-dtb not found in ZIP!"
+    exit 1
+  fi
+fi
+
+# Flash DTBO if present
+if [ -f "$home/dtbo.img" ] && { [ -b "$DTBOPART" ] || [ -e "$DTBOPART" ]; }; then
+  dd if="$home/dtbo.img" of="$DTBOPART" 2>/dev/null
+  echo "DTBO flashed to $DTBOPART"
+fi
+
+echo "=========================================="
+echo " Flash complete!"
+echo " Reboot to apply"
+echo "=========================================="

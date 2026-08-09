@@ -1,509 +1,83 @@
-# Infinity Kernel v1.0.62
-# Poco X3 Pro (vayu/bhima) | SM8150 (LineageOS base) | Linux 4.14.357
-# Neutron Clang (tag 17062026) | AnyKernel3 | MIT License
-# Universal Root: 'kernelsu' = all KSU managers (Next/ReSukiSU/Ultra/KoWSu)
-#   'apatch' = APatch patches kernel at flash time (no kernel-side root)
-#   'none'   = no root
-# GitHub Actions — FREE for public repos
-# Ubuntu 24.04 (glibc 2.39)
-
-name: Infinity Kernel Build
+name: Build Infinity Kernel
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
   workflow_dispatch:
     inputs:
-      root_solution:
-        description: "Root solution"
+      root_mode:
+        description: 'Root manager'
         required: true
-        default: "kernelsu"
+        default: 'kernelsu'
         type: choice
         options:
           - kernelsu
           - apatch
+          - sukisu_ultra
+          - resukisu
+          - kowsu
           - none
-
-env:
-  TC_DIR: "$HOME/toolchains/neutron-clang"
-  NEUTRON_TAG: "17062026"
-  KERNEL_SRC: "kernel_scr"
+      jobs:
+        description: 'Build jobs (parallel)'
+        required: false
+        default: '8'
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    name: Build (${{ github.event.inputs.root_mode || 'kernelsu' }})
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    env:
+      ROOT_MODE: ${{ github.event.inputs.root_mode || 'kernelsu' }}
+      BUILD_JOBS: ${{ github.event.inputs.jobs || '8' }}
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
-      # ── Step 1: Checkout repo ─────────────────────
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Step 2: Install deps + download Neutron Clang ──
-      - name: Install dependencies + Neutron Clang
+      - name: Install dependencies
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive ln -fs /usr/share/zoneinfo/UTC /etc/localtime
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update
-          # Install all packages — non-fatal for individual pkg failures
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            bc bison build-essential ccache curl flex git gperf \
-            libelf-dev libncurses-dev libssl-dev libxml2-utils \
-            rsync xsltproc zip zlib1g-dev zstd lz4 \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
-            ca-certificates wget schedtool lzop squashfs-tools \
-            || echo "NOTE: apt-get returned non-zero (some packages unavailable), continuing..."
-          # Verify cross-compilers are available
-          if ! command -v aarch64-linux-gnu-gcc &>/dev/null; then
-            echo "ERROR: aarch64-linux-gnu-gcc not found!"; exit 1
-          fi
-          if ! command -v arm-linux-gnueabi-gcc &>/dev/null; then
-            echo "ERROR: arm-linux-gnueabi-gcc not found!"; exit 1
-          fi
-          echo "Cross-compilers OK"
-          mkdir -p "$TC_DIR"
-          if [ ! -d "$TC_DIR/bin" ]; then
-            # Download Neutron Clang — try multiple strategies
-            ASSET_URL=""
-            ASSET_URL=$(curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/${NEUTRON_TAG}" | grep -o '"browser_download_url": *"[^"]*x86_64[^"]*\.tar\.zst"' | head -1 | cut -d'"' -f4)
-            if [ -z "$ASSET_URL" ]; then
-              ASSET_URL=$(curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/${NEUTRON_TAG}" | grep -o '"browser_download_url": *"[^"]*linux[^"]*\.tar\.zst"' | grep -v aarch64 | head -1 | cut -d'"' -f4)
-            fi
-            if [ -z "$ASSET_URL" ]; then
-              ASSET_URL="https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${NEUTRON_TAG}/neutron-clang-${NEUTRON_TAG}.tar.zst"
-            fi
-            echo "Downloading: $ASSET_URL"
-            curl -sL "$ASSET_URL" -o /tmp/neutron.tar.zst
-            DL_SIZE=$(stat -c%s /tmp/neutron.tar.zst 2>/dev/null || echo 0)
-            if [ "$DL_SIZE" -lt 1048576 ]; then
-              echo "WARNING: Primary download too small ($DL_SIZE bytes), trying fallback..."
-              rm -f /tmp/neutron.tar.zst
-              FALLBACK_URL=$(curl -sL "https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/${NEUTRON_TAG}" | grep -o '"browser_download_url": *"[^"]*"' | grep -v aarch64 | head -1 | cut -d'"' -f4)
-              if [ -n "$FALLBACK_URL" ]; then
-                echo "Fallback: $FALLBACK_URL"
-                curl -sL "$FALLBACK_URL" -o /tmp/neutron.tar.zst
-                DL_SIZE=$(stat -c%s /tmp/neutron.tar.zst 2>/dev/null || echo 0)
-              fi
-            fi
-            if [ "$DL_SIZE" -lt 1048576 ]; then
-              echo "ERROR: Neutron Clang download failed (size: $DL_SIZE bytes)"
-              exit 1
-            fi
-            echo "Downloaded: $((DL_SIZE / 1048576)) MB"
-            tar -xf /tmp/neutron.tar.zst -C "$TC_DIR" --strip-components=1
-            rm -f /tmp/neutron.tar.zst
-          else
-            echo "Neutron Clang already present"
-          fi
-          echo "PATH=$TC_DIR/bin:$PATH" >> "$GITHUB_ENV"
-          clang --version 2>&1 | head -1 || echo "WARNING: clang version check failed"
+          apt-get update && apt-get install -y \
+            gcc-aarch64-linux-gnu arm-linux-gnueabi-gcc \
+            make bc bison flex libssl-dev libelf-dev \
+            python3 ccache git wget xz-utils zip \
+            file rsync lz4 zstd sudo
 
-      # ── Step 3: Get kernel source ─────────────────
-      - name: Get kernel source (local or clone)
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-infinity-${{ github.sha }}
+          restore-keys: ccache-infinity-
+
+      - name: Build kernel
         run: |
-          if [ -d "$KERNEL_SRC/arch/arm64" ]; then
-            echo "Using local $KERNEL_SRC"
-          else
-            echo "Cloning LineageOS kernel..."
-            git clone --depth=1 https://github.com/LineageOS/android_kernel_qcom_sm8150 "$KERNEL_SRC"
-          fi
-          echo "Available defconfigs:"
-          ls "$KERNEL_SRC/arch/arm64/configs/" | head -10
+          export PATH="/usr/lib/ccache:$PATH"
+          ccache --set-config=max_size=2G
+          ccache -z
+          chmod +x build.sh
+          ./build.sh $ROOT_MODE $BUILD_JOBS
 
-      # ── Step 4: Root solution (universal) ─────────
-      # 'kernelsu' compiles KernelSU-Next into the kernel.
-      # ALL KSU-compatible managers work: KernelSU-Next, ReSukiSU,
-      # SukiSU-Ultra, KoWSu — they share the same kernel protocol.
-      - name: "Root solution: setup"
-        run: |
-          ROOT_SOL="${{ github.event.inputs.root_solution || 'kernelsu' }}"
-          echo "ROOT_SOLUTION=$ROOT_SOL" >> "$GITHUB_ENV"
-          cd "$KERNEL_SRC" || { echo "WARN: kernel_src not found"; exit 0; }
-          echo "ROOT_SOLUTION=$ROOT_SOL"
-          case "$ROOT_SOL" in
-            kernelsu)
-              echo "Setting up KernelSU (universal — all KSU managers compatible)..."
-              if [ -d "KernelSU/kernel" ]; then
-                echo "KernelSU already present"
-              else
-                KSU_OK=0
-                for URL in \
-                  "https://github.com/KernelSU-Next/KernelSU" \
-                  "https://github.com/negrroo/KernelSU" \
-                  "https://github.com/tiann/KernelSU"; do
-                  if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main \
-                    --config "credential.helper=" "$URL" KernelSU 2>/dev/null; then
-                    KSU_OK=1; break
-                  fi
-                  rm -rf KernelSU
-                done
-                if [ "$KSU_OK" = "0" ]; then
-                  for URL in \
-                    "https://github.com/KernelSU-Next/KernelSU" \
-                    "https://github.com/negrroo/KernelSU" \
-                    "https://github.com/tiann/KernelSU"; do
-                    if GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch v3.2.0 \
-                      --config "credential.helper=" "$URL" KernelSU 2>/dev/null; then
-                      KSU_OK=1; break
-                    fi
-                    rm -rf KernelSU
-                  done
-                fi
-                if [ "$KSU_OK" = "1" ] && [ -f KernelSU/kernel/setup.sh ]; then
-                  bash KernelSU/kernel/setup.sh -o KernelSU 2>/dev/null || true
-                fi
-                [ "$KSU_OK" = "1" ] && echo "KernelSU ready (compatible with all KSU managers)" || echo "WARNING: no KernelSU"
-              fi
-              ;;
-            apatch)
-              echo "APatch mode: no kernel-side root (APatch patches kernel at flash time)"
-              ;;
-            none)
-              echo "No root solution selected"
-              ;;
-          esac
-
-      # ── Step 5: SuSFS v2.1.0 ─────────────────────
-      - name: SuSFS v2.1.0
-        run: |
-          cd "$KERNEL_SRC" || { echo "WARN: kernel_src not found"; exit 0; }
-          [ -f ".susfs_v210" ] && { echo "SuSFS already applied"; exit 0; }
-          set +e
-          for REPO in \
-            "https://github.com/AnymoreProject/susfs4ksu" \
-            "https://github.com/sidex15/susfs4ksu"; do
-            TMPD=$(mktemp -d)
-            if GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
-              --config "credential.helper=" "$REPO" "$TMPD/r" 2>/dev/null; then
-              PF=$(find "$TMPD/r" -name "*4.14*.patch" 2>/dev/null | sort | head -1)
-              if [ -n "$PF" ] && grep -q "susfs" "$PF" 2>/dev/null; then
-                patch -p1 --forward < "$PF" 2>/dev/null
-                touch .susfs_v210
-                echo "SuSFS applied from $REPO"
-              fi
-            fi
-            rm -rf "$TMPD"
-            [ -f .susfs_v210 ] && break
-          done
-          set -e
-          echo "SuSFS step done"
-
-      # ── Step 6: Copy infinity files ───────────────
-      - name: Copy infinity kernel files
-        run: |
-          REPO_DIR="$PWD"
-          cd "$KERNEL_SRC" || { echo "ERROR: $KERNEL_SRC not found"; exit 1; }
-          # Copy defconfig (critical)
-          if [ -f "$REPO_DIR/arch/arm64/configs/infinity_defconfig" ]; then
-            cp -v "$REPO_DIR/arch/arm64/configs/infinity_defconfig" arch/arm64/configs/infinity_defconfig
-          else
-            echo "WARNING: infinity_defconfig not found in repo, skipping"
-          fi
-          # Copy charging control header
-          if [ -f "$REPO_DIR/include/linux/infinity_charging_control.h" ]; then
-            cp -v "$REPO_DIR/include/linux/infinity_charging_control.h" include/linux/infinity_charging_control.h
-          fi
-          # Copy charging driver
-          if [ -d "$REPO_DIR/drivers/charging" ]; then
-            cp -rv "$REPO_DIR/drivers/charging" drivers/charging
-            grep -q 'source "drivers/charging/Kconfig"' drivers/Kconfig 2>/dev/null \
-              || echo 'source "drivers/charging/Kconfig"' >> drivers/Kconfig
-            grep -q 'obj-$(CONFIG_CHARGING_CONTROL)' drivers/Makefile 2>/dev/null \
-              || echo 'obj-$(CONFIG_CHARGING_CONTROL)      += charging/' >> drivers/Makefile
-          fi
-          # Copy patches
-          if [ -d "$REPO_DIR/patches" ]; then
-            cp -rv "$REPO_DIR/patches" patches
-          fi
-          echo "All files copied OK"
-
-      # ── Step 7: Config ────────────────────────────
-      - name: Config (defconfig + merge + 3-pass disable + HIDDEN)
-        run: |
-          cd "$KERNEL_SRC"
-          PROTECTED="CONFIG_NO_HZ_COMMON CONFIG_NO_HZ_IDLE CONFIG_VIRT_CPU_ACCOUNTING_GEN CONFIG_CONTEXT_TRACKING CONFIG_NO_HZ CONFIG_HZ_PERIODIC CONFIG_NO_HZ_FULL CONFIG_CPUSETS"
-          DISABLE="CONFIG_STAGING CONFIG_SOUND CONFIG_SND CONFIG_RC_CORE CONFIG_MEDIA_SUPPORT CONFIG_FB CONFIG_VT CONFIG_VHOST CONFIG_COMEDI CONFIG_AGP CONFIG_INFINIBAND CONFIG_MHI_BUS CONFIG_MHI_QCOM"
-          # Defconfig with fallback: vendor/sm8150_defconfig -> sm8150_defconfig
-          DEFCONFIG=""
-          if [ -f "arch/arm64/configs/vendor/sm8150_defconfig" ]; then
-            DEFCONFIG="vendor/sm8150_defconfig"
-          elif [ -f "arch/arm64/configs/sm8150_defconfig" ]; then
-            DEFCONFIG="sm8150_defconfig"
-          else
-            echo "Available configs:"
-            ls arch/arm64/configs/ 2>/dev/null
-            echo "ERROR: No sm8150 defconfig found!"
-            exit 1
-          fi
-          echo "Using defconfig: $DEFCONFIG"
-          make ARCH=arm64 "$DEFCONFIG" O=out
-          scripts/kconfig/merge_config.sh -O out/ out/.config arch/arm64/configs/infinity_defconfig || true
-          make ARCH=arm64 olddefconfig O=out </dev/null || true
-          disable_cfgs() {
-            for cfg in $DISABLE; do
-              _s=0; for p in $PROTECTED; do [ "$cfg" = "$p" ] && _s=1 && break; done
-              [ "$_s" = "1" ] && continue
-              sed -i "s/^${cfg}=y/# ${cfg} is not set/" out/.config
-              sed -i "s/^${cfg}=m/# ${cfg} is not set/" out/.config
-            done
-            sed -i 's/^CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' out/.config
-            sed -i 's/^CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' out/.config
-            sed -i '/^CONFIG_CC_STACKPROTECTOR_NONE/d' out/.config
-            echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
-          }
-          disable_cfgs
-          make ARCH=arm64 olddefconfig O=out </dev/null || true
-          disable_cfgs
-          make ARCH=arm64 olddefconfig O=out </dev/null || true
-          for cfg in $DISABLE; do
-            _s=0; for p in $PROTECTED; do [ "$cfg" = "$p" ] && _s=1 && break; done
-            [ "$_s" = "1" ] && continue
-            sed -i "/^${cfg}=/d" out/.config
-            grep -q "^# ${cfg} is not set" out/.config \
-              || echo "# ${cfg} is not set" >> out/.config
-          done
-          make ARCH=arm64 olddefconfig O=out </dev/null || true
-          HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
-          make ARCH=arm64 O=out -j1 scripts 2>&1 | tail -3 || true
-          for cfg in $HIDDEN; do
-            grep -q "^${cfg}=y" out/.config \
-              || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-            [ -f out/include/config/auto.conf ] && {
-              grep -q "^${cfg}=y" out/include/config/auto.conf \
-                || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; };
-            }
-            [ -f out/include/generated/autoconf.h ] && {
-              grep -q "#define ${cfg} 1" out/include/generated/autoconf.h \
-                || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; };
-            }
-          done
-          touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
-          echo "Config ready"
-
-      # ── Step 8: OpenSSL 3.0 patches ────────────────
-      - name: OpenSSL 3.0 patches
-        run: |
-          cd "$KERNEL_SRC"
-          [ -f "certs/extract-cert.c" ] \
-            && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' certs/extract-cert.c
-          [ -f "scripts/sign-file.c" ] \
-            && sed -i '1i #define OPENSSL_SUPPRESS_DEPRECATED 1' scripts/sign-file.c
-          echo "OpenSSL patched"
-
-      # ── Step 9: Apply patches + SuSFS config ──────
-      - name: Apply patches + SuSFS config
-        run: |
-          cd "$KERNEL_SRC"
-          [ -f patches/apply_all.sh ] && bash patches/apply_all.sh .
-          grep -q "CONFIG_SUFS_FS" out/.config 2>/dev/null \
-            || { find . -name "Kconfig.sufs" -o -name "Kconfig.susfs" 2>/dev/null \
-              | head -1 | grep -q . \
-              && { echo "CONFIG_SUFS_FS=y" >> out/.config; echo "CONFIG_SUFS=y" >> out/.config; }; }
-          make ARCH=arm64 olddefconfig O=out </dev/null || true
-
-      # ── Step 10: Source compat fixes (15 fixes) ────
-      - name: Source compat fixes (15 fixes)
-        run: |
-          cd "$KERNEL_SRC"
-          set +e
-          echo "=== Fix 1/15: filter.h compat_sock_fprog ==="
-          if [ -f "include/linux/filter.h" ]; then
-            echo 'BEGIN{a=0} /struct compat_sock_fprog/{if(!a){print "#ifdef CONFIG_COMPAT";a=1}} a&&/};/{print $0;print "#endif";a=0;next} {print $0}' > /tmp/fix_filter.awk
-            awk -f /tmp/fix_filter.awk include/linux/filter.h > /tmp/filter.h.fixed
-            mv /tmp/filter.h.fixed include/linux/filter.h
-            echo "  Done"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 2/15: hugetlbpage.c ptep -> pte ==="
-          if [ -f "mm/hugetlbpage.c" ]; then
-            if grep -q 'huge_pmd_share' mm/hugetlbpage.c 2>/dev/null; then
-              sed -i 's/ptep = huge_pmd_share/pte = huge_pmd_share/' mm/hugetlbpage.c 2>/dev/null
-              echo "  Done (pattern found and patched)"
-            else
-              echo "  Skip (pattern not found in file — already fixed or different code)"
-            fi
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 3/15: huge_memory.c try_to_unmap NULL ==="
-          if [ -f "mm/huge_memory.c" ]; then
-            sed -i 's/try_to_unmap(page, ttu_flags);/try_to_unmap(page, ttu_flags, NULL);/' mm/huge_memory.c 2>/dev/null
-            echo "  Done"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 4/15: khugepaged.c nr_ptes ==="
-          if [ -f "mm/khugepaged.c" ]; then
-            sed -i '/atomic_long_dec(&mm->nr_ptes)/d' mm/khugepaged.c 2>/dev/null
-            echo "  Done"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 5/15: sock.c compat_timeval ==="
-          if [ -f "net/core/sock.c" ]; then
-            LI=$(grep -n '^#include' net/core/sock.c | tail -1 | cut -d: -f1)
-            if [ -z "$LI" ]; then
-              LI=$(grep -n '#include' net/core/sock.c | head -1 | cut -d: -f1)
-            fi
-            if [ -n "$LI" ]; then
-              head -n "$LI" net/core/sock.c > /tmp/sock_top.c
-              echo '' >> /tmp/sock_top.c
-              echo '#ifndef COMPAT_USE_64BIT_TIME' >> /tmp/sock_top.c
-              echo '#define COMPAT_USE_64BIT_TIME 0' >> /tmp/sock_top.c
-              echo '#endif' >> /tmp/sock_top.c
-              echo 'struct compat_timeval { int tv_sec; int tv_usec; };' >> /tmp/sock_top.c
-              tail -n +"$((LI + 1))" net/core/sock.c >> /tmp/sock_top.c
-              mv /tmp/sock_top.c net/core/sock.c
-              echo "  Done (injected after line $LI)"
-            else
-              echo "  Skip (no #include found in file)"
-            fi
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 6/15: net/compat.c CONFIG_COMPAT ==="
-          if [ -f "net/compat.c" ] && ! grep -q 'CONFIG_COMPAT' net/compat.c 2>/dev/null; then
-            echo '#ifdef CONFIG_COMPAT' | cat - net/compat.c > /tmp/cc.tmp && mv /tmp/cc.tmp net/compat.c
-            echo '#endif' >> net/compat.c
-            echo "  Done"
-          else
-            echo "  Skip"
-          fi
-          echo "=== Fix 7/15: fs/compat.c CONFIG_COMPAT ==="
-          if [ -f "fs/compat.c" ] && ! grep -q 'CONFIG_COMPAT' fs/compat.c 2>/dev/null; then
-            echo '#ifdef CONFIG_COMPAT' | cat - fs/compat.c > /tmp/fc.tmp && mv /tmp/fc.tmp fs/compat.c
-            echo '#endif' >> fs/compat.c
-            echo "  Done"
-          else
-            echo "  Skip"
-          fi
-          echo "=== Fix 8/15: task_mmu.c pmd_t pointer cast ==="
-          if [ -f "fs/proc/task_mmu.c" ]; then
-            sed -i 's/pmd_t \*pmd = \([^(:]*\)/pmd_t *pmd = (pmd_t *)(\1)/g' fs/proc/task_mmu.c 2>/dev/null
-            echo "  Done"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 9/15: blktrace.c kernfs_node_id -> u64 ==="
-          if [ -f "kernel/trace/blktrace.c" ]; then
-            sed -i 's/union kernfs_node_id \*id/u64 id/g' kernel/trace/blktrace.c 2>/dev/null
-            echo "  Done"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 10/15: fault-inject.c should_fail_ex ==="
-          if [ -f "lib/fault-inject.c" ]; then
-            sed -i 's/should_fail_ex(__get_free_pages)/should_fail_ex(__get_free_pages, 0)/g' lib/fault-inject.c 2>/dev/null
-            echo "  Done (removed problematic line)"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 11/15: trace_event_perf.c event/tp_event ==="
-          if [ -f "kernel/trace/trace_event_perf.c" ]; then
-            sed -i 's/\bu64[[:space:]]\{1,\}event\b/u64 tp_event/g' kernel/trace/trace_event_perf.c 2>/dev/null
-            echo "  Done"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 12/15: pinctrl includes (targeted) ==="
-          PINCTRL_COUNT=0
-          for f in \
-            drivers/input/touchscreen/synaptics_tcm_core.c \
-            drivers/input/touchscreen/synaptics_tcm_i2c.c \
-            drivers/input/touchscreen/hbtp_input.c \
-            drivers/input/touchscreen/synaptics_tcm_touch.c \
-            drivers/platform/msm/synaptics_tcm_touch.c; do
-            [ -f "$f" ] || continue
-            grep -q 'linux/pinctrl/consumer.h' "$f" 2>/dev/null && continue
-            grep -q 'pinctrl_select_state\|pinctrl_pm_select\|devm_pinctrl_get' "$f" 2>/dev/null || continue
-            sed -i '1i #include <linux/pinctrl/consumer.h>' "$f" 2>/dev/null
-            PINCTRL_COUNT=$((PINCTRL_COUNT + 1))
-            echo "  Added pinctrl include: $f"
-          done
-          echo "  Done ($PINCTRL_COUNT files patched)"
-          echo "=== Fix 13/15: iommu-debug.c stub ==="
-          if [ -f "drivers/iommu/iommu-debug.c" ]; then
-            printf '/* stubbed: dev_archdata.mapping removed */\n#include <linux/module.h>\n#include <linux/device.h>\nvoid iommu_debugfs_setup(void) {}\nvoid iommu_debugfs_add_device(struct device *dev) {}\nvoid iommu_debugfs_remove_device(struct device *dev) {}\nEXPORT_SYMBOL(iommu_debugfs_setup);\nEXPORT_SYMBOL(iommu_debugfs_add_device);\nEXPORT_SYMBOL(iommu_debugfs_remove_device);\n' > drivers/iommu/iommu-debug.c 2>/dev/null && echo "  Done" || echo "  Failed to write stub (permission?)"
-          else
-            echo "  Skip (file not found)"
-          fi
-          echo "=== Fix 14/15: -Wno-int-conversion (KCFLAGS) ==="
-          echo "  (applied in build step)"
-          echo "=== Fix 15/15: -Wno-shadow (KCFLAGS) ==="
-          echo "  (applied in build step)"
-          set -e
-          echo "=== All 15 fixes applied ==="
-
-      # ── Step 11: Clean source tree ───────────────
-      - name: Clean source tree
-        run: |
-          cd "$KERNEL_SRC"
-          rm -f .config
-          rm -rf include/config
-
-      # ── Step 12: Build ────────────────────────────
-      - name: Build Infinity Kernel
-        timeout-minutes: 90
-        run: |
-          cd "$KERNEL_SRC"
-          make ARCH=arm64 O=out olddefconfig </dev/null 2>&1 || true
-          HIDDEN="CONFIG_SCHED_INFO CONFIG_PINCTRL CONFIG_POSIX_TIMERS CONFIG_RTC_CLASS CONFIG_SCHED_WALT CONFIG_DEBUG_REGULATOR"
-          for cfg in $HIDDEN; do
-            grep -q "^${cfg}=y" out/.config \
-              || { sed -i "/^# ${cfg} is not set/d" out/.config; echo "${cfg}=y" >> out/.config; }
-            [ -f out/include/config/auto.conf ] && {
-              grep -q "^${cfg}=y" out/include/config/auto.conf \
-                || { sed -i "/^${cfg}=/d" out/include/config/auto.conf; echo "${cfg}=y" >> out/include/config/auto.conf; };
-            }
-            [ -f out/include/generated/autoconf.h ] && {
-              grep -q "#define ${cfg} 1" out/include/generated/autoconf.h \
-                || { sed -i "/#define ${cfg} /d" out/include/generated/autoconf.h; echo "#define ${cfg} 1" >> out/include/generated/autoconf.h; };
-            }
-          done
-          touch out/include/config/auto.conf out/include/generated/autoconf.h 2>/dev/null || true
-          echo "Clang: $(which clang)"
-          echo "Clang version: $(clang --version 2>&1 | head -1)"
-          make O=out ARCH=arm64 CC=clang \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            HOSTCC=gcc HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -Wno-error" \
-            KCFLAGS="-Wno-error -Wno-int-conversion -Wno-shadow" -j$(nproc) Image.gz-dtb dtbs \
-            2>&1 | tee /tmp/kernel_build.log
-          RET=${PIPESTATUS[0]}
-          if [ "$RET" -ne 0 ]; then
-            echo "=========================================="
-            echo "  BUILD ERROR (exit $RET)"
-            echo "=========================================="
-            grep -E "error:" /tmp/kernel_build.log | head -40
-            tail -80 /tmp/kernel_build.log
-            exit 1
-          fi
-
-      # ── Step 13: Package ──────────────────────────
-      - name: Package AnyKernel3 ZIP
-        if: success()
-        run: |
-          IMG="$KERNEL_SRC/out/arch/arm64/boot/Image.gz-dtb"
-          if [ ! -f "$IMG" ]; then
-            echo "ERROR: Image.gz-dtb not found"
-            ls -la "$KERNEL_SRC/out/arch/arm64/boot/" 2>/dev/null
-            exit 1
-          fi
-          echo "Image: $(du -sh "$IMG" | cut -f1)"
-          echo "Root: $ROOT_SOLUTION"
-          cp -v "$IMG" AnyKernel3/
-          cd AnyKernel3
-          zip -r9 "/tmp/infinity-kernel-v1.0.62-${ROOT_SOLUTION}.zip" *
-
-      # ── Step 14: Upload artifact ──────────────────
-      - name: Upload kernel ZIP
-        if: success()
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: infinity-kernel-v1.0.62-${{ github.event.inputs.root_solution || 'kernelsu-next' }}
-          path: /tmp/infinity-kernel-v1.0.62-*.zip
+          name: InfinityKernel-${{ env.ROOT_MODE }}
+          path: out/*.zip
+          retention-days: 30
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Build Result" >> $GITHUB_STEP_SUMMARY
+          if ls out/*.zip 1>/dev/null 2>&1; then
+            echo "✅ **SUCCESS**" >> $GITHUB_STEP_SUMMARY
+            ls -lh out/*.zip >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **FAILED**" >> $GITHUB_STEP_SUMMARY
+            tail -40 infinity_build.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          fi

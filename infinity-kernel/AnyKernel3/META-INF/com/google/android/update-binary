@@ -1,0 +1,13 @@
+#!/sbin/sh
+
+# AnyKernel3 update-binary
+# Infinity Kernel for Poco X3 Pro (vayu/bhima)
+
+OUTFD=${2:-1}
+ZIPFILE=$3
+
+# Load AnyKernel functions
+. "$AKHOME"/anykernel.sh
+
+# Run the main script
+. "$AKHOME"/anykernel.sh
