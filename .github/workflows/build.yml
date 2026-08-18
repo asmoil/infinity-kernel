@@ -1,83 +1,94 @@
+# Infinity Kernel CI
+# SPDX-License-Identifier: GPL-2.0-only
+
 name: Build Infinity Kernel
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
+    branches: [main, master]
+    paths-ignore:
+      - '*.md'
+      - '.gitignore'
   pull_request:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
     inputs:
-      root_mode:
-        description: 'Root manager'
-        required: true
+      root_type:
+        description: 'Root type'
+        required: false
         default: 'kernelsu'
         type: choice
         options:
           - kernelsu
           - apatch
-          - sukisu_ultra
-          - resukisu
-          - kowsu
           - none
-      jobs:
-        description: 'Build jobs (parallel)'
+      variant:
+        description: 'Variant'
         required: false
-        default: '8'
+        default: 'miui'
+        type: choice
+        options:
+          - miui
+          - hyperos
+          - aosp
 
 jobs:
   build:
-    name: Build (${{ github.event.inputs.root_mode || 'kernelsu' }})
+    name: ${{ matrix.root }}-${{ matrix.variant }}
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:22.04
-    env:
-      ROOT_MODE: ${{ github.event.inputs.root_mode || 'kernelsu' }}
-      BUILD_JOBS: ${{ github.event.inputs.jobs || '8' }}
-      DEBIAN_FRONTEND: noninteractive
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - root: kernelsu
+            variant: miui
+          - root: kernelsu
+            variant: hyperos
+          - root: apatch
+            variant: miui
+          - root: none
+            variant: aosp
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
-          apt-get update && apt-get install -y \
-            gcc-aarch64-linux-gnu arm-linux-gnueabi-gcc \
-            make bc bison flex libssl-dev libelf-dev \
-            python3 ccache git wget xz-utils zip \
-            file rsync lz4 zstd sudo
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            zstd libncurses5 libncursesw5 python3 python3-pip \
+            zip unzip rsync curl git file wget ccache
 
       - name: Setup ccache
-        uses: actions/cache@v4
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          path: ~/.ccache
-          key: ccache-infinity-${{ github.sha }}
-          restore-keys: ccache-infinity-
+          key: ${{ matrix.root }}-${{ matrix.variant }}-${{ github.sha }}
+          restore-keys: ${{ matrix.root }}-${{ matrix.variant }}-
+          max-size: 2G
+
+      - name: Download Neutron Clang
+        run: |
+          mkdir -p toolchain
+          curl -sL "https://github.com/NeutronClangToolchain/clang-build/releases/download/20250430/clang-build-20250430.tar.zst" \
+            -o /tmp/tc.tar.zst
+          zstd -d /tmp/tc.tar.zst -o /tmp/tc.tar
+          tar xf /tmp/tc.tar -C toolchain --strip-components=1
+          rm -f /tmp/tc.tar /tmp/tc.tar.zst
+          echo "TOOLCHAIN_BIN=$(pwd)/toolchain/bin" >> $GITHUB_ENV
 
       - name: Build kernel
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/ccache
+          PATH: ${{ env.TOOLCHAIN_BIN }}:${{ github.env.PATH }}
         run: |
-          export PATH="/usr/lib/ccache:$PATH"
-          ccache --set-config=max_size=2G
-          ccache -z
           chmod +x build.sh
-          ./build.sh $ROOT_MODE $BUILD_JOBS
+          ./build.sh ${{ matrix.root }} ${{ matrix.variant }}
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: InfinityKernel-${{ env.ROOT_MODE }}
+          name: InfinityKernel-${{ matrix.root }}-${{ matrix.variant }}
           path: out/*.zip
-          retention-days: 30
-
-      - name: Build summary
-        if: always()
-        run: |
-          echo "## Build Result" >> $GITHUB_STEP_SUMMARY
-          if ls out/*.zip 1>/dev/null 2>&1; then
-            echo "✅ **SUCCESS**" >> $GITHUB_STEP_SUMMARY
-            ls -lh out/*.zip >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **FAILED**" >> $GITHUB_STEP_SUMMARY
-            tail -40 infinity_build.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-          fi
+          retention-days: 14
